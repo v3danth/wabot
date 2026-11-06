@@ -1,9 +1,13 @@
 package main
 
 import (
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -147,5 +151,40 @@ func TestProfileText(t *testing.T) {
 	want := "*911111111111@s.whatsapp.net*\nAbout: busy\nDevices: 2\nProfile pic: hidden or none"
 	if got != want {
 		t.Errorf("profileText =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestChatLogLine(t *testing.T) {
+	en := chatEntry{
+		At:   time.Date(2026, 11, 7, 14, 3, 21, 0, time.UTC),
+		ID:   "3AABC",
+		Who:  "me",
+		Kind: "conversation",
+		Text: "two\nlines",
+	}
+	want := "2026-11-07 14:03:21 [3AABC] me <conversation>: two\\nlines\n"
+	if got := chatLogLine(en); got != want {
+		t.Errorf("chatLogLine = %q, want %q", got, want)
+	}
+}
+
+func TestChatLogPath(t *testing.T) {
+	jid := types.NewADJID("919886473508", 0, 3)
+	if got := chatLogPath(jid); strings.Contains(filepath.Base(got), ":") {
+		t.Errorf("chatLogPath(%s) = %q, contains ':'", jid, got)
+	}
+}
+
+func TestEntryText(t *testing.T) {
+	react := &waE2E.Message{ReactionMessage: &waE2E.ReactionMessage{
+		Key:  &waCommon.MessageKey{ID: proto.String("3AABC")},
+		Text: proto.String("x"),
+	}}
+	if got := entryText(react); got != "reacted x to 3AABC" {
+		t.Errorf("entryText(reaction) = %q", got)
+	}
+	react.ReactionMessage.Text = proto.String("")
+	if got := entryText(react); got != "removed reaction from 3AABC" {
+		t.Errorf("entryText(unreact) = %q", got)
 	}
 }

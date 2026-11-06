@@ -47,6 +47,7 @@ import (
 const (
 	dbPath      = "session.db"
 	downloadDir = "downloads"
+	chatLogDir  = "chats"
 	prefix      = "!"
 )
 
@@ -250,7 +251,7 @@ func (e Env) Chat() types.JID { return e.Msg.Info.Chat }
 
 // Send sends a message to the current chat and returns its ID.
 func (e Env) Send(m *waE2E.Message) (types.MessageID, error) {
-	resp, err := e.Client.SendMessage(e.Ctx, e.Chat(), m)
+	resp, err := sendMessage(e.Ctx, e.Client, e.Chat(), m)
 	return resp.ID, err
 }
 
@@ -287,6 +288,7 @@ func init() {
 		"autoreact": {"!autoreact <word> <emoji> | list | off <word>", "auto-react when a message contains a word", cmdAutoReact},
 		"reactto":   {"!reactto <chat> <id> [emoji] [sender]", "react to ANY message by hand (sender defaults to me)", cmdReactTo},
 		"info":      {"!info [id]", "show chat/sender/id/key of a message", cmdInfo},
+		"chatlog":   {"!chatlog", "where this chat's saved log is", cmdChatLog},
 		"recent":    {"!recent", "list recent message IDs (to use with react/reply)", cmdRecent},
 		"edit":      {"!edit", "send a message, then edit it", cmdEdit},
 		"del":       {"!del", "send a message, then delete it for everyone", cmdDelete},
@@ -348,7 +350,7 @@ func cmdSend(e Env) error {
 		return errors.New("usage: !send 919876543210 hello there")
 	}
 	to := phoneToJID(phone)
-	if _, err := e.Client.SendMessage(e.Ctx, to, textMsg(text)); err != nil {
+	if _, err := sendMessage(e.Ctx, e.Client, to, textMsg(text)); err != nil {
 		return err
 	}
 	return e.Say("Sent to %s", to.User)
@@ -476,7 +478,7 @@ func resolveEmoji(s string) string {
 
 // sendReaction is the one place that actually sends a reaction ("" removes it).
 func sendReaction(ctx context.Context, client *whatsmeow.Client, t target, emoji string) error {
-	_, err := client.SendMessage(ctx, t.Chat, client.BuildReaction(t.Chat, t.Sender, t.ID, emoji))
+	_, err := sendMessage(ctx, client, t.Chat, client.BuildReaction(t.Chat, t.Sender, t.ID, emoji))
 	return err
 }
 
@@ -624,7 +626,7 @@ func cmdReactTo(e Env) error {
 			return fmt.Errorf("bad sender: %w", err)
 		}
 	}
-	if _, err := e.Client.SendMessage(e.Ctx, t.Chat, e.Client.BuildReaction(t.Chat, t.Sender, t.ID, emoji)); err != nil {
+	if err := sendReaction(e.Ctx, e.Client, t, emoji); err != nil {
 		return err
 	}
 	return e.Say("%s\nReacted.", describeTarget(e, t, emoji))
@@ -654,7 +656,7 @@ func cmdReply(e Env) error {
 			QuotedMessage: t.Message,
 		},
 	}}
-	if _, err := e.Client.SendMessage(e.Ctx, t.Chat, msg); err != nil {
+	if _, err := sendMessage(e.Ctx, e.Client, t.Chat, msg); err != nil {
 		return err
 	}
 	if e.Terminal {
@@ -994,6 +996,118 @@ func cmdChannels(e Env) error {
 }
 
 // =====================================================================
+// Chat log: every chat is saved to chats/<chat>.txt
+// =====================================================================
+
+// chatEntry is one line of a saved chat.
+type chatEntry struct {
+	At   time.Time
+	Chat types.JID
+	ID   types.MessageID
+	Who  string
+	Kind string
+	Text string
+}
+
+// chatLogPath is the file for one chat; ':' is replaced because device
+// suffixes are not valid in every file system.
+func chatLogPath(chat types.JID) string {
+	return filepath.Join(chatLogDir, strings.ReplaceAll(chat.String(), ":", "_")+".txt")
+}
+
+// chatLogLine renders one entry; newlines are escaped so one message is one line.
+func chatLogLine(en chatEntry) string {
+	text := strings.ReplaceAll(en.Text, "\n", `\n`)
+	return fmt.Sprintf("%s [%s] %s <%s>: %s\n", en.At.Format("2006-01-02 15:04:05"), en.ID, en.Who, en.Kind, text)
+}
+
+// entryText is the readable content of a message, including reactions,
+// which have no text of their own.
+func entryText(m *waE2E.Message) string {
+	if r := m.GetReactionMessage(); r != nil {
+		if r.GetText() == "" {
+			return "removed reaction from " + r.GetKey().GetID()
+		}
+		return "reacted " + r.GetText() + " to " + r.GetKey().GetID()
+	}
+	return textOf(m)
+}
+
+// chatLogQueue decouples handlers from disk writes: one writer goroutine
+// owns the files, so lines never interleave and no lock is held during I/O.
+var chatLogQueue = make(chan chatEntry, 256)
+
+// recordChat queues an entry without blocking; a full queue drops the
+// entry rather than stalling message handling.
+func recordChat(en chatEntry) {
+	select {
+	case chatLogQueue <- en:
+	default:
+		slog.Warn("chat log queue full, entry dropped", "id", en.ID)
+	}
+}
+
+// writeChatLog appends queued entries to their chat files. Entries still
+// queued when the program exits are lost.
+func writeChatLog() {
+	if err := os.MkdirAll(chatLogDir, 0o700); err != nil {
+		slog.Error("chat log disabled", "err", err)
+		return
+	}
+	for en := range chatLogQueue {
+		if err := appendLine(chatLogPath(en.Chat), chatLogLine(en)); err != nil {
+			slog.Warn("chat log write failed", "chat", en.Chat, "err", err)
+		}
+	}
+}
+
+// appendLine opens per write; chat volume is low, and it keeps no file
+// handles open across reconnects.
+func appendLine(path, line string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(line); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// sendMessage is the only way the bot sends, so outgoing messages are logged too.
+func sendMessage(ctx context.Context, client *whatsmeow.Client, chat types.JID, m *waE2E.Message) (whatsmeow.SendResponse, error) {
+	resp, err := client.SendMessage(ctx, chat, m)
+	if err == nil {
+		recordChat(chatEntry{At: resp.Timestamp, Chat: chat, ID: resp.ID, Who: "bot", Kind: kindOf(m), Text: entryText(m)})
+	}
+	return resp, err
+}
+
+func incomingEntry(evt *events.Message) chatEntry {
+	who := evt.Info.PushName + " (" + evt.Info.Sender.ToNonAD().String() + ")"
+	if evt.Info.IsFromMe {
+		who = "me"
+	}
+	return chatEntry{At: evt.Info.Timestamp, Chat: evt.Info.Chat, ID: evt.Info.ID, Who: who, Kind: kindOf(evt.Message), Text: entryText(evt.Message)}
+}
+
+func cmdChatLog(e Env) error {
+	if e.Terminal {
+		dir, err := filepath.Abs(chatLogDir)
+		if err != nil {
+			return err
+		}
+		return e.Say("Chat logs are in %s\nOpen the folder with: open %q", dir, dir)
+	}
+	path, err := filepath.Abs(chatLogPath(e.Chat()))
+	if err != nil {
+		return err
+	}
+	return e.Say("This chat is saved on the bot's computer at:\n%s", path)
+}
+
+// =====================================================================
 // 4. Event handling
 // =====================================================================
 
@@ -1064,6 +1178,7 @@ func handleMessage(ctx context.Context, client *whatsmeow.Client, evt *events.Me
 		return
 	}
 
+	recordChat(incomingEntry(evt))
 	if r := evt.Message.GetReactionMessage(); r != nil {
 		slog.Info("reaction", "sender", evt.Info.Sender.ToNonAD(), "target", r.GetKey().GetID(),
 			"chat", evt.Info.Chat, "removed", r.GetText() == "")
@@ -1167,6 +1282,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	go writeChatLog()
 	client.AddEventHandler(eventHandler(ctx, client))
 	if err := connect(ctx, client); err != nil {
 		return err
