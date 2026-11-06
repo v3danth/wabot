@@ -291,7 +291,8 @@ func init() {
 
 		// --- users ---
 		"check":  {"!check <phone>", "is this number on WhatsApp?", cmdCheck},
-		"whois":  {"!whois [phone]", "about + profile picture info", cmdWhois},
+		"whois":  {"!whois [phone|jid]", "About text, devices and profile picture", cmdWhois},
+		"pic":    {"!pic [phone|jid]", "only the profile picture", cmdPic},
 		"status": {"!status <text>", "set the bot account's About text", cmdStatus},
 		"blocks": {"!blocks", "list blocked contacts", cmdBlocklist},
 
@@ -734,13 +735,57 @@ func cmdCheck(e Env) error {
 	return e.Say("%s", b.String())
 }
 
+// profile is what WhatsApp tells us about a user.
+type profile struct {
+	JID        types.JID
+	About      string
+	Devices    int
+	PictureURL string // empty when the picture is hidden or not set
+}
+
+// whoisTarget picks whose profile to show: the argument if given, else the sender.
+func whoisTarget(e Env) (types.JID, error) {
+	if e.Args == "" {
+		return e.Msg.Info.Sender.ToNonAD(), nil
+	}
+	return toJID(e.Args)
+}
+
+// lookupProfile gathers About, devices and picture URL in one place so
+// commands never call the user APIs directly.
+func lookupProfile(ctx context.Context, client *whatsmeow.Client, who types.JID) (profile, error) {
+	infos, err := client.GetUserInfo(ctx, []types.JID{who})
+	if err != nil {
+		return profile{}, fmt.Errorf("user info %s: %w", who, err)
+	}
+	info := infos[who]
+	p := profile{JID: who, About: info.Status, Devices: len(info.Devices)}
+	// A missing picture is normal (privacy settings), so it is not an error.
+	if pic, err := client.GetProfilePictureInfo(ctx, who, &whatsmeow.GetProfilePictureParams{}); err == nil && pic != nil {
+		p.PictureURL = pic.URL
+	}
+	return p, nil
+}
+
+// profileText renders a profile for chat or terminal.
+func profileText(p profile) string {
+	pic := "hidden or none"
+	if p.PictureURL != "" {
+		pic = "available"
+	}
+	return fmt.Sprintf("*%s*\nAbout: %s\nDevices: %d\nProfile pic: %s", p.JID, p.About, p.Devices, pic)
+}
+
+// httpClient has a timeout so a stalled CDN download cannot hang a command.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
 // fetch downloads a URL into memory.
 func fetch(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -751,50 +796,77 @@ func fetch(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// sendProfilePic saves the picture (terminal) or sends it as an image (WhatsApp).
-func sendProfilePic(e Env, who types.JID, url string) error {
-	data, err := fetch(e.Ctx, url)
-	if err != nil {
-		return fmt.Errorf("download profile pic: %w", err)
+// saveFile writes into the download folder and returns the absolute path,
+// so the printed path works from any directory.
+func saveFile(name string, data []byte) (string, error) {
+	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+		return "", err
 	}
+	path, err := filepath.Abs(filepath.Join(downloadDir, name))
+	if err != nil {
+		return "", err
+	}
+	return path, os.WriteFile(path, data, 0o644)
+}
+
+// deliverImage hands an image to whoever asked: saved to disk for the
+// terminal (it cannot show images), sent as a photo on WhatsApp.
+func deliverImage(e Env, data []byte, mimetype, name, caption string) error {
 	if e.Terminal {
-		_ = os.MkdirAll(downloadDir, 0o755)
-		path := filepath.Join(downloadDir, "profile_"+who.User+".jpg")
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			return err
+		path, err := saveFile(name, data)
+		if err != nil {
+			return fmt.Errorf("save %s: %w", name, err)
 		}
-		abs, _ := filepath.Abs(path)
-		return e.Say("Profile pic saved → %s\nOpen it with: open %q", abs, abs)
+		return e.Say("Saved %s\nOpen it with: open %q", path, path)
 	}
 	up, err := e.Client.Upload(e.Ctx, data, whatsmeow.MediaImage)
 	if err != nil {
 		return fmt.Errorf("upload: %w", err)
 	}
-	_, err = e.Send(imageMsg(up, "image/jpeg", "Profile picture of "+who.User))
+	_, err = e.Send(imageMsg(up, mimetype, caption))
 	return err
 }
 
-func cmdWhois(e Env) error {
-	who := e.Msg.Info.Sender.ToNonAD()
-	if e.Args != "" {
-		var err error
-		if who, err = toJID(e.Args); err != nil {
-			return err
-		}
+// sendProfilePic downloads a profile picture and delivers it.
+func sendProfilePic(e Env, p profile) error {
+	if p.PictureURL == "" {
+		return errors.New("profile picture is hidden or not set")
 	}
-	infos, err := e.Client.GetUserInfo(e.Ctx, []types.JID{who})
+	data, err := fetch(e.Ctx, p.PictureURL)
+	if err != nil {
+		return fmt.Errorf("download profile pic: %w", err)
+	}
+	return deliverImage(e, data, "image/jpeg", "profile_"+p.JID.User+".jpg", "Profile picture of "+p.JID.User)
+}
+
+func cmdWhois(e Env) error {
+	who, err := whoisTarget(e)
 	if err != nil {
 		return err
 	}
-	info := infos[who]
-	if err := e.Say("*%s*\nAbout: %s\nDevices: %d", who, info.Status, len(info.Devices)); err != nil {
+	p, err := lookupProfile(e.Ctx, e.Client, who)
+	if err != nil {
 		return err
 	}
-	pic, err := e.Client.GetProfilePictureInfo(e.Ctx, who, &whatsmeow.GetProfilePictureParams{})
-	if err != nil || pic == nil {
-		return e.Say("Profile pic: hidden or none")
+	if err := e.Say("%s", profileText(p)); err != nil {
+		return err
 	}
-	return sendProfilePic(e, who, pic.URL)
+	if p.PictureURL == "" {
+		return nil
+	}
+	return sendProfilePic(e, p)
+}
+
+func cmdPic(e Env) error {
+	who, err := whoisTarget(e)
+	if err != nil {
+		return err
+	}
+	p, err := lookupProfile(e.Ctx, e.Client, who)
+	if err != nil {
+		return err
+	}
+	return sendProfilePic(e, p)
 }
 
 func cmdStatus(e Env) error {
@@ -911,14 +983,12 @@ func saveMedia(ctx context.Context, client *whatsmeow.Client, evt *events.Messag
 		fmt.Println("  download failed:", err)
 		return
 	}
-	_ = os.MkdirAll(downloadDir, 0o755)
-	path := filepath.Join(downloadDir, evt.Info.ID+extFor(mimetype))
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	path, err := saveFile(evt.Info.ID+extFor(mimetype), data)
+	if err != nil {
 		fmt.Println("  save failed:", err)
 		return
 	}
-	abs, _ := filepath.Abs(path)
-	fmt.Println("  saved media →", abs)
+	fmt.Println("  saved media →", path)
 }
 
 // logPollVote decrypts and prints a vote on one of our polls.
