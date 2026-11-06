@@ -19,6 +19,8 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"log/slog"
+	"math/rand/v2"
 	"mime"
 	"net/http"
 	"os"
@@ -141,21 +143,28 @@ func phoneToJID(phone string) types.JID {
 	return types.NewJID(digits, types.DefaultUserServer)
 }
 
-// mediaMime returns the mimetype if the message contains downloadable media.
-func mediaMime(m *waE2E.Message) (string, bool) {
+// media is a downloadable attachment and its mimetype.
+type media interface {
+	whatsmeow.DownloadableMessage
+	GetMimetype() string
+}
+
+// mediaOf returns the attachment in a message, if any. Picking the type here
+// is what whatsmeow recommends over the deprecated DownloadAny.
+func mediaOf(m *waE2E.Message) (media, bool) {
 	switch {
 	case m.GetImageMessage() != nil:
-		return m.GetImageMessage().GetMimetype(), true
+		return m.GetImageMessage(), true
 	case m.GetVideoMessage() != nil:
-		return m.GetVideoMessage().GetMimetype(), true
+		return m.GetVideoMessage(), true
 	case m.GetAudioMessage() != nil:
-		return m.GetAudioMessage().GetMimetype(), true
+		return m.GetAudioMessage(), true
 	case m.GetDocumentMessage() != nil:
-		return m.GetDocumentMessage().GetMimetype(), true
+		return m.GetDocumentMessage(), true
 	case m.GetStickerMessage() != nil:
-		return m.GetStickerMessage().GetMimetype(), true
+		return m.GetStickerMessage(), true
 	}
-	return "", false
+	return nil, false
 }
 
 // extFor picks a file extension for a mimetype.
@@ -269,7 +278,7 @@ func init() {
 	commands = map[string]Command{
 		// --- basic messaging ---
 		"help":      {"!help", "show this list", cmdHelp},
-		"ping":      {"!ping", "reply pong", func(e Env) error { return e.Say("pong 🏓") }},
+		"ping":      {"!ping", "reply pong", func(e Env) error { return e.Say("pong") }},
 		"echo":      {"!echo <text>", "repeat your text", cmdEcho},
 		"reply":     {"!reply [id] <text>", "quoted reply (to a message ID, the quoted msg, or yours)", cmdReply},
 		"react":     {"!react [id|last|#n] [emoji|random]", "react to a message (ID, newest, #n from recent, quoted, or yours)", cmdReact},
@@ -342,7 +351,7 @@ func cmdSend(e Env) error {
 	if _, err := e.Client.SendMessage(e.Ctx, to, textMsg(text)); err != nil {
 		return err
 	}
-	return e.Say("Sent to %s ✅", to.User)
+	return e.Say("Sent to %s", to.User)
 }
 
 // ---- recent messages: remembered so you can react/reply by ID ----
@@ -403,7 +412,7 @@ func pickTarget(e Env) (target, string, error) {
 		return target{e.Chat(), sender, ci.GetStanzaID(), ci.GetQuotedMessage()}, e.Args, nil
 	}
 	if e.Terminal {
-		return target{}, "", errors.New("say which message: react <id|last|#n> 🏓 (see: recent)")
+		return target{}, "", errors.New("say which message: react <id|last|#n> <emoji> (see: recent)")
 	}
 	return target{e.Chat(), e.Msg.Info.Sender, e.Msg.Info.ID, e.Msg.Message}, e.Args, nil
 }
@@ -445,15 +454,22 @@ func byPosition(s string) (*events.Message, bool) {
 	return recentMap[recentIDs[len(recentIDs)-n]], true
 }
 
-var randomEmojis = []string{"😂", "❤️", "🔥", "👍", "😮", "😢", "🙏", "🎉", "💯", "🏓", "😎", "🤯"}
+// Reaction emojis are data sent to WhatsApp, written as escapes to keep the
+// source free of literal emoji: thumbs up, heart, fire, joy, wow, sad, pray, party.
+const defaultReaction = "\U0001F44D"
 
-// resolveEmoji turns "" into 👍 and "random" into a random emoji.
+var randomEmojis = []string{
+	"\U0001F44D", "\u2764\uFE0F", "\U0001F525", "\U0001F602",
+	"\U0001F62E", "\U0001F622", "\U0001F64F", "\U0001F389",
+}
+
+// resolveEmoji turns "" into the default reaction and "random" into a random one.
 func resolveEmoji(s string) string {
 	switch s {
 	case "":
-		return "👍"
+		return defaultReaction
 	case "random":
-		return randomEmojis[time.Now().UnixNano()%int64(len(randomEmojis))]
+		return randomEmojis[rand.IntN(len(randomEmojis))]
 	}
 	return s
 }
@@ -476,7 +492,7 @@ func cmdUnreact(e Env) error {
 	if err := sendReaction(e.Ctx, e.Client, t, ""); err != nil {
 		return err
 	}
-	return e.Say("Reaction removed from %s ✅", t.ID)
+	return e.Say("Reaction removed from %s", t.ID)
 }
 
 // cmdReactAll reacts to the last n messages. On WhatsApp: only in the current chat.
@@ -506,7 +522,7 @@ func cmdReactAll(e Env) error {
 		}
 		time.Sleep(500 * time.Millisecond) // don't spam WhatsApp
 	}
-	return e.Say("Reacted to %d message(s) ✅", len(picks))
+	return e.Say("Reacted to %d message(s)", len(picks))
 }
 
 // ---- auto-react rules: word -> emoji ----
@@ -523,7 +539,7 @@ func cmdAutoReact(e Env) error {
 	switch {
 	case len(f) == 0 || f[0] == "list":
 		if len(autoRules) == 0 {
-			return e.Say("No auto-react rules. Add one: autoreact hello 👋")
+			return e.Say("No auto-react rules. Add one: autoreact hello <emoji>")
 		}
 		var b strings.Builder
 		for w, em := range autoRules {
@@ -535,7 +551,7 @@ func cmdAutoReact(e Env) error {
 		return e.Say("Removed rule for %q", f[1])
 	case len(f) == 2:
 		autoRules[strings.ToLower(f[0])] = f[1]
-		return e.Say("Will react %s to messages containing %q ✅", f[1], f[0])
+		return e.Say("Will react %s to messages containing %q", f[1], f[0])
 	}
 	return errors.New("usage: autoreact <word> <emoji> | list | off <word>")
 }
@@ -552,10 +568,14 @@ func autoReact(ctx context.Context, client *whatsmeow.Client, evt *events.Messag
 		}
 	}
 	autoMu.Unlock()
-	if emoji != "" {
-		_ = sendReaction(ctx, client, targetOf(evt), resolveEmoji(emoji))
-		fmt.Printf("  auto-reacted %s\n", emoji)
+	if emoji == "" {
+		return
 	}
+	if err := sendReaction(ctx, client, targetOf(evt), resolveEmoji(emoji)); err != nil {
+		slog.Warn("auto-react failed", "id", evt.Info.ID, "err", err)
+		return
+	}
+	slog.Info("auto-reacted", "id", evt.Info.ID, "chat", evt.Info.Chat)
 }
 
 // describeTarget shows the 4 BuildReaction inputs and the key WhatsApp will receive.
@@ -583,8 +603,8 @@ func toJID(s string) (types.JID, error) {
 
 // cmdReactTo reacts using all 4 inputs typed by hand — no remembered message needed.
 //
-//	reactto 278833789944039@lid 3EB0AC684A7EE08CD8C216 🏓          (my own message)
-//	reactto 120363…@g.us 3A88EC035EDE6284E0F0 🔥 919876543210      (someone else's, in a group)
+//	reactto 278833789944039@lid 3EB0AC684A7EE08CD8C216 <emoji>               (my own message)
+//	reactto 120363…@g.us 3A88EC035EDE6284E0F0 <emoji> 919876543210           (someone else's, in a group)
 func cmdReactTo(e Env) error {
 	f := strings.Fields(e.Args)
 	if len(f) < 2 {
@@ -595,9 +615,9 @@ func cmdReactTo(e Env) error {
 		return fmt.Errorf("bad chat: %w", err)
 	}
 	t := target{Chat: chat, ID: strings.ToUpper(f[1]), Sender: *e.Client.Store.ID} // default: my message
-	emoji := "👍"
+	emoji := defaultReaction
 	if len(f) >= 3 {
-		emoji = f[2]
+		emoji = resolveEmoji(f[2])
 	}
 	if len(f) >= 4 && f[3] != "me" {
 		if t.Sender, err = toJID(f[3]); err != nil {
@@ -607,7 +627,7 @@ func cmdReactTo(e Env) error {
 	if _, err := e.Client.SendMessage(e.Ctx, t.Chat, e.Client.BuildReaction(t.Chat, t.Sender, t.ID, emoji)); err != nil {
 		return err
 	}
-	return e.Say("%s\nReacted ✅", describeTarget(e, t, emoji))
+	return e.Say("%s\nReacted.", describeTarget(e, t, emoji))
 }
 
 func cmdInfo(e Env) error {
@@ -624,7 +644,7 @@ func cmdReply(e Env) error {
 		return err
 	}
 	if text == "" {
-		text = "This is a quoted reply ↩️"
+		text = "This is a quoted reply."
 	}
 	msg := &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 		Text: proto.String(text),
@@ -638,7 +658,7 @@ func cmdReply(e Env) error {
 		return err
 	}
 	if e.Terminal {
-		return e.Say("Replied to %s ✅", t.ID)
+		return e.Say("Replied to %s", t.ID)
 	}
 	return nil
 }
@@ -653,7 +673,7 @@ func cmdReact(e Env) error {
 		return err
 	}
 	if e.Terminal {
-		return e.Say("%s\nReacted ✅", describeTarget(e, t, emoji))
+		return e.Say("%s\nReacted.", describeTarget(e, t, emoji))
 	}
 	return nil
 }
@@ -664,12 +684,12 @@ func cmdEdit(e Env) error {
 		return err
 	}
 	time.Sleep(2 * time.Second)
-	_, err = e.Send(e.Client.BuildEdit(e.Chat(), id, textMsg("✏️ Edited text!")))
+	_, err = e.Send(e.Client.BuildEdit(e.Chat(), id, textMsg("Edited text.")))
 	return err
 }
 
 func cmdDelete(e Env) error {
-	id, err := e.Send(textMsg("This message will self-destruct in 3s 💣"))
+	id, err := e.Send(textMsg("This message will be deleted in 3s."))
 	if err != nil {
 		return err
 	}
@@ -680,10 +700,14 @@ func cmdDelete(e Env) error {
 }
 
 func cmdTyping(e Env) error {
-	_ = e.Client.SendChatPresence(e.Ctx, e.Chat(), types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	if err := e.Client.SendChatPresence(e.Ctx, e.Chat(), types.ChatPresenceComposing, types.ChatPresenceMediaText); err != nil {
+		return fmt.Errorf("start typing: %w", err)
+	}
 	time.Sleep(3 * time.Second)
-	_ = e.Client.SendChatPresence(e.Ctx, e.Chat(), types.ChatPresencePaused, types.ChatPresenceMediaText)
-	return e.Say("Done typing ⌨️")
+	if err := e.Client.SendChatPresence(e.Ctx, e.Chat(), types.ChatPresencePaused, types.ChatPresenceMediaText); err != nil {
+		return fmt.Errorf("stop typing: %w", err)
+	}
+	return e.Say("Done typing.")
 }
 
 func cmdImage(e Env) error {
@@ -692,7 +716,7 @@ func cmdImage(e Env) error {
 	if err != nil {
 		return fmt.Errorf("upload: %w", err)
 	}
-	_, err = e.Send(imageMsg(up, "image/png", "Generated by wabot 🎨"))
+	_, err = e.Send(imageMsg(up, "image/png", "Generated by wabot"))
 	return err
 }
 
@@ -789,7 +813,8 @@ func fetch(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	// Close errors after a full read carry no useful information.
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
@@ -876,7 +901,7 @@ func cmdStatus(e Env) error {
 	if err := e.Client.SetStatusMessage(e.Ctx, types.SetStatusInput{Text: proto.String(e.Args)}); err != nil {
 		return err
 	}
-	return e.Say("About updated ✅")
+	return e.Say("About updated.")
 }
 
 func cmdBlocklist(e Env) error {
@@ -974,32 +999,32 @@ func cmdChannels(e Env) error {
 
 // saveMedia downloads any media in the message into ./downloads.
 func saveMedia(ctx context.Context, client *whatsmeow.Client, evt *events.Message) {
-	mimetype, ok := mediaMime(evt.Message)
+	att, ok := mediaOf(evt.Message)
 	if !ok {
 		return
 	}
-	data, err := client.DownloadAny(ctx, evt.Message)
+	mimetype := att.GetMimetype()
+	data, err := client.Download(ctx, att)
 	if err != nil {
-		fmt.Println("  download failed:", err)
+		slog.Warn("media download failed", "id", evt.Info.ID, "err", err)
 		return
 	}
 	path, err := saveFile(evt.Info.ID+extFor(mimetype), data)
 	if err != nil {
-		fmt.Println("  save failed:", err)
+		slog.Warn("media save failed", "id", evt.Info.ID, "err", err)
 		return
 	}
-	fmt.Println("  saved media →", path)
+	slog.Info("media saved", "id", evt.Info.ID, "path", path)
 }
 
 // logPollVote decrypts and prints a vote on one of our polls.
 func logPollVote(ctx context.Context, client *whatsmeow.Client, evt *events.Message) {
 	vote, err := client.DecryptPollVote(ctx, evt)
 	if err != nil {
-		fmt.Println("  poll vote decrypt failed:", err)
+		slog.Warn("poll vote decrypt failed", "id", evt.Info.ID, "err", err)
 		return
 	}
-	fmt.Printf("  poll vote from %s: %d option(s) selected (hashes)\n",
-		evt.Info.Sender, len(vote.GetSelectedOptions()))
+	slog.Info("poll vote", "sender", evt.Info.Sender, "options", len(vote.GetSelectedOptions()))
 }
 
 // runCommand looks up and runs a command, replying with any error.
@@ -1010,7 +1035,10 @@ func runCommand(env Env, name string) {
 		return
 	}
 	if err := cmd.Run(env); err != nil {
-		_ = env.Say("⚠️ %v", err)
+		slog.Warn("command failed", "command", name, "err", err)
+		if sayErr := env.Say("Error: %v", err); sayErr != nil {
+			slog.Warn("error reply failed", "command", name, "err", sayErr)
+		}
 	}
 }
 
@@ -1032,34 +1060,29 @@ func handleMessage(ctx context.Context, client *whatsmeow.Client, evt *events.Me
 	// Protocol messages are invisible system messages (key sharing, history sync,
 	// edits/deletes from your phone). Nothing for a bot to do with them.
 	if evt.Message.GetProtocolMessage() != nil {
-		fmt.Printf("[sys] %s from %s (internal sync, ignored)\n",
-			evt.Message.GetProtocolMessage().GetType(), evt.Info.Sender)
+		slog.Debug("protocol message ignored", "type", evt.Message.GetProtocolMessage().GetType(), "sender", evt.Info.Sender)
 		return
 	}
 
 	if r := evt.Message.GetReactionMessage(); r != nil {
-		what := "reacted " + r.GetText()
-		if r.GetText() == "" {
-			what = "removed their reaction"
-		}
-		fmt.Printf("[reaction] %s (%s) %s on message %s in %s\n",
-			evt.Info.PushName, evt.Info.Sender.ToNonAD(), what, r.GetKey().GetID(), evt.Info.Chat)
+		slog.Info("reaction", "sender", evt.Info.Sender.ToNonAD(), "target", r.GetKey().GetID(),
+			"chat", evt.Info.Chat, "removed", r.GetText() == "")
 		return
 	}
 
 	text := textOf(evt.Message)
-	from := evt.Info.PushName
-	if evt.Info.IsFromMe {
-		from = "me"
-	}
-	fmt.Printf("[msg] id=%s %s | %s (%s): %s\n", evt.Info.ID, evt.Info.Chat, from, kindOf(evt.Message), text)
+	// Bodies and names stay out of logs; use the recent command to read text.
+	slog.Info("message", "id", evt.Info.ID, "chat", evt.Info.Chat, "sender", evt.Info.Sender.ToNonAD(),
+		"from_me", evt.Info.IsFromMe, "kind", kindOf(evt.Message))
 	if !strings.HasPrefix(text, prefix) {
 		remember(evt) // commands aren't remembered, so "last" means the last real message
 		autoReact(ctx, client, evt, text)
 	}
 
 	// Blue ticks: mark the message as read.
-	_ = client.MarkRead(ctx, []types.MessageID{evt.Info.ID}, evt.Info.Timestamp, evt.Info.Chat, evt.Info.Sender)
+	if err := client.MarkRead(ctx, []types.MessageID{evt.Info.ID}, evt.Info.Timestamp, evt.Info.Chat, evt.Info.Sender); err != nil {
+		slog.Warn("mark read failed", "id", evt.Info.ID, "err", err)
+	}
 
 	if evt.Message.GetPollUpdateMessage() != nil {
 		logPollVote(ctx, client, evt)
@@ -1080,26 +1103,28 @@ func eventHandler(ctx context.Context, client *whatsmeow.Client) func(any) {
 			// Run in a goroutine so slow commands (sleeps, uploads) don't block other events.
 			go handleMessage(ctx, client, evt)
 		case *events.Connected:
-			fmt.Println("[conn] connected as", client.Store.ID)
-			_ = client.SendPresence(ctx, types.PresenceAvailable) // show "online"
+			slog.Info("connected", "jid", client.Store.ID)
+			if err := client.SendPresence(ctx, types.PresenceAvailable); err != nil {
+				slog.Warn("set online failed", "err", err)
+			}
 		case *events.Disconnected:
-			fmt.Println("[conn] disconnected (auto-reconnecting)")
+			slog.Warn("disconnected, reconnecting")
 		case *events.LoggedOut:
-			fmt.Println("[conn] logged out — delete", dbPath, "and run again to re-link")
+			slog.Error("logged out: delete the session file and run again to re-link", "session", dbPath)
 		case *events.Receipt:
-			fmt.Printf("[receipt] %s %v in %s\n", evt.Type, evt.MessageIDs, evt.Chat)
+			slog.Debug("receipt", "type", evt.Type, "ids", evt.MessageIDs, "chat", evt.Chat)
 		case *events.Presence:
-			fmt.Printf("[presence] %s offline=%v\n", evt.From, evt.Unavailable)
+			slog.Debug("presence", "from", evt.From, "offline", evt.Unavailable)
 		case *events.ChatPresence:
-			fmt.Printf("[typing] %s %s in %s\n", evt.Sender, evt.State, evt.Chat)
+			slog.Debug("chat presence", "sender", evt.Sender, "state", evt.State, "chat", evt.Chat)
 		case *events.GroupInfo:
-			fmt.Printf("[group] change in %s by %s\n", evt.JID, evt.Sender)
+			slog.Info("group changed", "group", evt.JID, "by", evt.Sender)
 		case *events.JoinedGroup:
-			fmt.Printf("[group] joined %s (%s)\n", evt.Name, evt.JID)
+			slog.Info("joined group", "group", evt.JID)
 		case *events.CallOffer:
-			fmt.Printf("[call] incoming call from %s\n", evt.From)
+			slog.Info("incoming call", "from", evt.From)
 		case *events.UndecryptableMessage:
-			fmt.Printf("[msg] couldn't decrypt message from %s (will retry)\n", evt.Info.Sender)
+			slog.Warn("undecryptable message, retry requested", "id", evt.Info.ID, "sender", evt.Info.Sender)
 		}
 	}
 }
@@ -1155,7 +1180,18 @@ func run(ctx context.Context) error {
 	return nil
 }
 
+// setupLogging sends structured logs to stderr; WABOT_LOG=debug also shows
+// receipts, presence and typing events.
+func setupLogging() {
+	level := slog.LevelInfo
+	if os.Getenv("WABOT_LOG") == "debug" {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+}
+
 func main() {
+	setupLogging()
 	if err := run(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
