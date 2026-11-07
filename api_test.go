@@ -13,11 +13,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
-const testToken = "secret"
-
-func connectedTrue() bool { return true }
-
-// fakeFlow stands in for contactFlow and records what it was called with.
+// fakeFlow stands in for contactFlow and records the phone it was called with.
 func fakeFlow(err error, gotPhone *string) flowFunc {
 	return func(_ context.Context, phone, text string) (flowState, error) {
 		*gotPhone = phone
@@ -34,21 +30,15 @@ func fakeFlow(err error, gotPhone *string) flowFunc {
 	}
 }
 
-func postFlow(t *testing.T, h http.Handler, token, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/flow", strings.NewReader(body))
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+func postFlow(h http.Handler, body string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/flow", strings.NewReader(body)))
 	return rec
 }
 
 func TestFlowSuccess(t *testing.T) {
 	var gotPhone string
-	h := newAPIHandler(testToken, connectedTrue, fakeFlow(nil, &gotPhone))
-	rec := postFlow(t, h, testToken, `{"phone":"+91 98864-73508","text":"hi"}`)
+	rec := postFlow(flowHandler(fakeFlow(nil, &gotPhone)), `{"phone":"+91 98864-73508","text":"hi"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d, body %s", rec.Code, rec.Body)
 	}
@@ -65,61 +55,25 @@ func TestFlowSuccess(t *testing.T) {
 }
 
 func TestFlowStatusCodes(t *testing.T) {
+	const ok = `{"phone":"919886473508"}`
 	tests := []struct {
-		name, token, body string
-		flowErr           error
-		connected         bool
-		want              int
+		name, body string
+		flowErr    error
+		want       int
 	}{
-		{"no token", "", `{"phone":"919886473508"}`, nil, true, http.StatusUnauthorized},
-		{"wrong token", "nope", `{"phone":"919886473508"}`, nil, true, http.StatusUnauthorized},
-		{"bad json", testToken, `{`, nil, true, http.StatusBadRequest},
-		{"unknown field", testToken, `{"phone":"919886473508","x":1}`, nil, true, http.StatusBadRequest},
-		{"short phone", testToken, `{"phone":"123"}`, nil, true, http.StatusBadRequest},
-		{"long text", testToken, fmt.Sprintf(`{"phone":"919886473508","text":%q}`, strings.Repeat("a", maxTextLen+1)), nil, true, http.StatusBadRequest},
-		{"disconnected", testToken, `{"phone":"919886473508"}`, nil, false, http.StatusServiceUnavailable},
-		{"not on whatsapp", testToken, `{"phone":"919886473508"}`, fmt.Errorf("step 1: %w", errNotOnWhatsApp), true, http.StatusUnprocessableEntity},
-		{"timeout", testToken, `{"phone":"919886473508"}`, context.DeadlineExceeded, true, http.StatusGatewayTimeout},
-		{"upstream error", testToken, `{"phone":"919886473508"}`, errors.New("boom"), true, http.StatusBadGateway},
+		{"bad json", `{`, nil, http.StatusBadRequest},
+		{"short phone", `{"phone":"123"}`, nil, http.StatusBadRequest},
+		{"long text", fmt.Sprintf(`{"phone":"919886473508","text":%q}`, strings.Repeat("a", maxTextLen+1)), nil, http.StatusBadRequest},
+		{"not on whatsapp", ok, fmt.Errorf("step 1: %w", errNotOnWhatsApp), http.StatusUnprocessableEntity},
+		{"timeout", ok, context.DeadlineExceeded, http.StatusGatewayTimeout},
+		{"upstream error", ok, errors.New("boom"), http.StatusBadGateway},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var gotPhone string
-			h := newAPIHandler(testToken, func() bool { return tc.connected }, fakeFlow(tc.flowErr, &gotPhone))
-			if rec := postFlow(t, h, tc.token, tc.body); rec.Code != tc.want {
+			if rec := postFlow(flowHandler(fakeFlow(tc.flowErr, &gotPhone)), tc.body); rec.Code != tc.want {
 				t.Errorf("status %d, want %d (body %s)", rec.Code, tc.want, rec.Body)
 			}
 		})
-	}
-}
-
-func TestFlowRejectsGet(t *testing.T) {
-	var gotPhone string
-	h := newAPIHandler(testToken, connectedTrue, fakeFlow(nil, &gotPhone))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/flow", nil))
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("GET /flow status %d, want 405", rec.Code)
-	}
-}
-
-func TestHealthz(t *testing.T) {
-	for connected, want := range map[bool]int{true: http.StatusOK, false: http.StatusServiceUnavailable} {
-		var gotPhone string
-		h := newAPIHandler(testToken, func() bool { return connected }, fakeFlow(nil, &gotPhone))
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		if rec.Code != want {
-			t.Errorf("connected=%v: status %d, want %d", connected, rec.Code, want)
-		}
-	}
-}
-
-func TestRecoverTurnsPanicInto500(t *testing.T) {
-	h := withRecover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("status %d, want 500", rec.Code)
 	}
 }
