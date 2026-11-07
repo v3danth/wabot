@@ -304,7 +304,7 @@ func init() {
 		"check":  {"!check <phone>", "is this number on WhatsApp?", cmdCheck},
 		"whois":  {"!whois [phone|jid]", "About text, devices and profile picture", cmdWhois},
 		"pic":    {"!pic [phone|jid]", "only the profile picture", cmdPic},
-		"flow":   {"!flow <phone> [text]", "whois, send a message, then react to it", cmdFlow},
+		"flow":   {"!flow <phone>", "whois, then react to a configured message", cmdFlow},
 		"status": {"!status <text>", "set the bot account's About text", cmdStatus},
 		"blocks": {"!blocks", "list blocked contacts", cmdBlocklist},
 
@@ -898,16 +898,15 @@ func cmdPic(e Env) error {
 }
 
 // =====================================================================
-// Contact flow: whois -> send message -> react, one step at a time
+// Contact flow: check registration -> whois -> react, one step at a time
 // =====================================================================
 
 // flowState is passed from step to step; each step returns a new copy.
 type flowState struct {
-	Who     types.JID // filled by checkRegistered
-	Profile profile   // filled by fetchProfile
-	Text    string    // message to send
-	Emoji   string    // reaction to put on it
-	SentID  types.MessageID
+	Who       types.JID // filled by checkRegistered
+	Profile   profile   // filled by fetchProfile
+	Emoji     string    // reaction to put on the message
+	MessageID types.MessageID
 }
 
 // flowStep is one stage of the flow. Steps are plain functions so the
@@ -921,8 +920,7 @@ type flowStep struct {
 var contactFlowSteps = []flowStep{
 	{"check registered", checkRegistered},
 	{"whois", fetchProfile},
-	{"send message", sendFlowMessage},
-	{"react", reactToSent},
+	{"react", reactToMessage},
 }
 
 // runSteps runs steps in order and stops at the first failure, naming the
@@ -967,41 +965,36 @@ func fetchProfile(ctx context.Context, client *whatsmeow.Client, st flowState) (
 	return st, nil
 }
 
-func sendFlowMessage(ctx context.Context, client *whatsmeow.Client, st flowState) (flowState, error) {
-	resp, err := sendMessage(ctx, client, st.Who, textMsg(st.Text))
-	if err != nil {
-		return st, err
-	}
-	st.SentID = resp.ID
-	return st, nil
-}
+// Replace this placeholder with the ID of an existing message to react to.
+const reactionMessageID types.MessageID = "3EB0TEST"
 
-// reactToSent reacts to the message just sent. It is our own message, so
-// the sender in the key is our own JID.
-func reactToSent(ctx context.Context, client *whatsmeow.Client, st flowState) (flowState, error) {
-	t := target{Chat: st.Who, Sender: client.Store.ID.ToNonAD(), ID: st.SentID}
+// reactToMessage reacts to the configured existing message. The sender in the
+// key is our own JID, so the target message must have been sent by this account.
+func reactToMessage(ctx context.Context, client *whatsmeow.Client, st flowState) (flowState, error) {
+	t := target{Chat: st.Who, Sender: client.Store.ID.ToNonAD(), ID: st.MessageID}
 	return st, sendReaction(ctx, client, t, st.Emoji)
 }
 
 // contactFlow is the function to call from code: phone in, finished state out.
-func contactFlow(ctx context.Context, client *whatsmeow.Client, phone, text string) (flowState, error) {
-	start := flowState{Who: phoneToJID(phone), Text: text, Emoji: defaultReaction}
+func contactFlow(ctx context.Context, client *whatsmeow.Client, phone, _ string) (flowState, error) {
+	start := flowState{
+		Who:       phoneToJID(phone),
+		Emoji:     defaultReaction,
+		MessageID: reactionMessageID,
+	}
 	return runSteps(ctx, client, start, contactFlowSteps)
 }
 
 func cmdFlow(e Env) error {
-	phone, text, _ := strings.Cut(e.Args, " ")
-	if phone == "" {
-		return errors.New("usage: flow <phone> [text]")
+	phone, extra, _ := strings.Cut(e.Args, " ")
+	if phone == "" || strings.TrimSpace(extra) != "" {
+		return errors.New("usage: flow <phone>")
 	}
-	if text = strings.TrimSpace(text); text == "" {
-		text = "Hello from wabot"
-	}
-	st, err := contactFlow(e.Ctx, e.Client, phone, text)
+	st, err := contactFlow(e.Ctx, e.Client, phone, "")
 	if err != nil {
 		return err
 	}
-	return e.Say("%s\n\nSent message %s and reacted %s to it.", profileText(st.Profile), st.SentID, st.Emoji)
+	return e.Say("%s\n\nReacted %s to message %s.", profileText(st.Profile), st.Emoji, st.MessageID)
 }
 
 func cmdStatus(e Env) error {

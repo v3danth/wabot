@@ -24,7 +24,7 @@ const (
 // flowRequest is the JSON body of POST /flow.
 type flowRequest struct {
 	Phone string `json:"phone"`
-	Text  string `json:"text"`
+	Text  string `json:"text"` // accepted for compatibility; the flow does not send it
 }
 
 // flowResponse is what POST /flow returns on success.
@@ -76,7 +76,7 @@ func startAPI(client *whatsmeow.Client) (stop func(), err error) {
 	}, nil
 }
 
-// flowHandler reads {"phone","text"}, runs whois -> send -> react, and
+// flowHandler reads {"phone","text"}, runs whois -> react, and
 // replies with the result or {"error": "..."}.
 func flowHandler(flow flowFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +140,7 @@ func flowResponseOf(st flowState) flowResponse {
 		About:      st.Profile.About,
 		Devices:    st.Profile.Devices,
 		PictureURL: st.Profile.PictureURL,
-		MessageID:  st.SentID,
+		MessageID:  st.MessageID,
 		Reaction:   st.Emoji,
 	}
 }

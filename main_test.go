@@ -200,7 +200,7 @@ func TestRunStepsStopsAtFirstFailure(t *testing.T) {
 			if fail {
 				return st, errors.New("boom")
 			}
-			st.Text += name
+			st.Emoji += name
 			return st, nil
 		}}
 	}
@@ -212,7 +212,7 @@ func TestRunStepsStopsAtFirstFailure(t *testing.T) {
 	if !slices.Equal(ran, []string{"a", "b"}) {
 		t.Errorf("ran %v, want [a b]", ran)
 	}
-	if st.Text != "a" {
-		t.Errorf("state = %q, want result of last good step", st.Text)
+	if st.Emoji != "a" {
+		t.Errorf("state = %q, want result of last good step", st.Emoji)
 	}
 }

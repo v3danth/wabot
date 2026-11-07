@@ -15,17 +15,16 @@ import (
 
 // fakeFlow stands in for contactFlow and records the phone it was called with.
 func fakeFlow(err error, gotPhone *string) flowFunc {
-	return func(_ context.Context, phone, text string) (flowState, error) {
+	return func(_ context.Context, phone, _ string) (flowState, error) {
 		*gotPhone = phone
 		if err != nil {
 			return flowState{}, err
 		}
 		return flowState{
-			Who:     types.NewJID(phone, types.DefaultUserServer),
-			Profile: profile{About: "busy", Devices: 2},
-			Text:    text,
-			Emoji:   defaultReaction,
-			SentID:  "3EB0TEST",
+			Who:       types.NewJID(phone, types.DefaultUserServer),
+			Profile:   profile{About: "busy", Devices: 2},
+			Emoji:     defaultReaction,
+			MessageID: "3EB0TEST",
 		}, nil
 	}
 }
