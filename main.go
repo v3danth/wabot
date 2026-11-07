@@ -940,6 +940,10 @@ func runSteps(ctx context.Context, client *whatsmeow.Client, st flowState, steps
 	return st, nil
 }
 
+// errNotOnWhatsApp lets callers such as the HTTP API tell a bad number
+// apart from a network failure.
+var errNotOnWhatsApp = errors.New("not on WhatsApp")
+
 // checkRegistered turns the typed number into the JID WhatsApp knows, and
 // fails early for numbers that are not on WhatsApp.
 func checkRegistered(ctx context.Context, client *whatsmeow.Client, st flowState) (flowState, error) {
@@ -948,7 +952,7 @@ func checkRegistered(ctx context.Context, client *whatsmeow.Client, st flowState
 		return st, err
 	}
 	if len(res) == 0 || !res[0].IsIn {
-		return st, fmt.Errorf("%s is not on WhatsApp", st.Who.User)
+		return st, fmt.Errorf("%s: %w", st.Who.User, errNotOnWhatsApp)
 	}
 	st.Who = res[0].JID
 	return st, nil
@@ -1392,6 +1396,12 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer client.Disconnect()
+
+	stopAPI, err := startAPI(client)
+	if err != nil {
+		return err
+	}
+	defer stopAPI()
 
 	fmt.Println("Bot running. Type a command here (try: help), or send !help on WhatsApp. Ctrl+C to stop.")
 	fmt.Print("> ")
