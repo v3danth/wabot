@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"wabot/wa"
 
 	"go.mau.fi/whatsmeow"
 )
@@ -37,9 +38,9 @@ type flowResponse struct {
 	Reaction   string `json:"reaction"`
 }
 
-// flowFunc is contactFlow's shape; the handler takes it as a value so it
-// can be tested without a WhatsApp connection.
-type flowFunc func(ctx context.Context, phone, text string) (flowState, error)
+// flowFunc is what the handler runs per request; it is a value so the
+// handler can be tested without a WhatsApp connection.
+type flowFunc func(ctx context.Context, phone, text string) (wa.FlowState, error)
 
 // startAPI serves POST /flow and returns a function that shuts it down.
 func startAPI(client *whatsmeow.Client) (stop func(), err error) {
@@ -51,8 +52,8 @@ func startAPI(client *whatsmeow.Client) (stop func(), err error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", addr, err)
 	}
-	flow := func(ctx context.Context, phone, text string) (flowState, error) {
-		return contactFlow(ctx, client, phone, text)
+	flow := func(ctx context.Context, phone, _ string) (wa.FlowState, error) {
+		return wa.ContactFlow(ctx, client, phone)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /flow", flowHandler(flow))
@@ -115,7 +116,7 @@ func flowHandler(flow flowFunc) http.HandlerFunc {
 // flowErrorStatus tells the caller whether retrying could help.
 func flowErrorStatus(err error) int {
 	switch {
-	case errors.Is(err, errNotOnWhatsApp):
+	case errors.Is(err, wa.ErrNotOnWhatsApp):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout
@@ -127,14 +128,14 @@ func flowErrorStatus(err error) int {
 // normalizePhone keeps the digits of an international number and checks the
 // E.164 length (8 to 15 digits with country code).
 func normalizePhone(s string) (string, error) {
-	digits := phoneToJID(s).User
+	digits := wa.PhoneToJID(s).User
 	if len(digits) < 8 || len(digits) > 15 {
 		return "", errors.New("phone must be 8-15 digits including country code, e.g. 919876543210")
 	}
 	return digits, nil
 }
 
-func flowResponseOf(st flowState) flowResponse {
+func flowResponseOf(st wa.FlowState) flowResponse {
 	return flowResponse{
 		JID:        st.Who.String(),
 		About:      st.Profile.About,

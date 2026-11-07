@@ -9,21 +9,22 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"wabot/wa"
 
 	"go.mau.fi/whatsmeow/types"
 )
 
 // fakeFlow stands in for contactFlow and records the phone it was called with.
 func fakeFlow(err error, gotPhone *string) flowFunc {
-	return func(_ context.Context, phone, _ string) (flowState, error) {
+	return func(_ context.Context, phone, _ string) (wa.FlowState, error) {
 		*gotPhone = phone
 		if err != nil {
-			return flowState{}, err
+			return wa.FlowState{}, err
 		}
-		return flowState{
+		return wa.FlowState{
 			Who:       types.NewJID(phone, types.DefaultUserServer),
-			Profile:   profile{About: "busy", Devices: 2},
-			Emoji:     defaultReaction,
+			Profile:   wa.Profile{About: "busy", Devices: 2},
+			Emoji:     wa.DefaultReaction,
 			MessageID: "3EB0TEST",
 		}, nil
 	}
@@ -63,7 +64,7 @@ func TestFlowStatusCodes(t *testing.T) {
 		{"bad json", `{`, nil, http.StatusBadRequest},
 		{"short phone", `{"phone":"123"}`, nil, http.StatusBadRequest},
 		{"long text", fmt.Sprintf(`{"phone":"919886473508","text":%q}`, strings.Repeat("a", maxTextLen+1)), nil, http.StatusBadRequest},
-		{"not on whatsapp", ok, fmt.Errorf("step 1: %w", errNotOnWhatsApp), http.StatusUnprocessableEntity},
+		{"not on whatsapp", ok, fmt.Errorf("step 1: %w", wa.ErrNotOnWhatsApp), http.StatusUnprocessableEntity},
 		{"timeout", ok, context.DeadlineExceeded, http.StatusGatewayTimeout},
 		{"upstream error", ok, errors.New("boom"), http.StatusBadGateway},
 	}

@@ -1,7 +1,10 @@
-// wabot: a single-file WhatsApp bot showing most whatsmeow features,
+// Command bot is an interactive WhatsApp bot showing most whatsmeow features,
 // written as small functions + a command table.
 //
-// Run:   go run .
+// Run from the repo root so it shares session.db with the API:
+//
+//	go run ./cmd/bot
+//
 // First run shows a QR code -> WhatsApp > Settings > Linked devices > Link a device.
 // The session is saved in session.db, so later runs log in automatically.
 //
@@ -31,15 +34,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"wabot/wa"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver (stores your login session)
-	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
-	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -50,46 +51,6 @@ const (
 	chatLogDir  = "chats"
 	prefix      = "!"
 )
-
-// =====================================================================
-// 1. Setup & login
-// =====================================================================
-
-// newClient opens (or creates) the session DB and returns a client.
-func newClient(ctx context.Context) (*whatsmeow.Client, error) {
-	container, err := sqlstore.New(ctx, "sqlite3", "file:"+dbPath+"?_foreign_keys=on", waLog.Noop)
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-	device, err := container.GetFirstDevice(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get device: %w", err)
-	}
-	return whatsmeow.NewClient(device, waLog.Stdout("Client", "WARN", true)), nil
-}
-
-// connect shows a QR code on first run, otherwise just connects.
-func connect(ctx context.Context, client *whatsmeow.Client) error {
-	if client.Store.ID != nil {
-		return client.Connect()
-	}
-	qrChan, err := client.GetQRChannel(ctx)
-	if err != nil {
-		return err
-	}
-	if err := client.Connect(); err != nil {
-		return err
-	}
-	for evt := range qrChan {
-		if evt.Event == "code" {
-			fmt.Println("Scan this QR code in WhatsApp > Linked devices:")
-			qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
-		} else {
-			fmt.Println("Login event:", evt.Event)
-		}
-	}
-	return nil
-}
 
 // =====================================================================
 // 2. Pure helpers (no network, easy to test)
@@ -131,17 +92,6 @@ func splitArgs(s, sep string) []string {
 		}
 	}
 	return out
-}
-
-// phoneToJID turns "+91 98765-43210" into 919876543210@s.whatsapp.net.
-func phoneToJID(phone string) types.JID {
-	digits := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, phone)
-	return types.NewJID(digits, types.DefaultUserServer)
 }
 
 // media is a downloadable attachment and its mimetype.
@@ -350,7 +300,7 @@ func cmdSend(e Env) error {
 	if phone == "" || strings.TrimSpace(text) == "" {
 		return errors.New("usage: !send 919876543210 hello there")
 	}
-	to := phoneToJID(phone)
+	to := wa.PhoneToJID(phone)
 	if _, err := sendMessage(e.Ctx, e.Client, to, textMsg(text)); err != nil {
 		return err
 	}
@@ -387,37 +337,30 @@ func lookup(id string) (*events.Message, bool) {
 	return evt, ok
 }
 
-// target is the message a react/reply should act on.
-type target struct {
-	Chat, Sender types.JID
-	ID           types.MessageID
-	Message      *waE2E.Message
-}
-
 // pickTarget decides which message react/reply acts on and returns the leftover args:
 //  1. first arg is a known message ID  -> that message (works from terminal too)
 //  2. command was sent as a WhatsApp reply to a message -> the quoted message
 //  3. otherwise -> the command message itself (WhatsApp only)
-func pickTarget(e Env) (target, string, error) {
+func pickTarget(e Env) (wa.Target, string, error) {
 	first, rest, _ := strings.Cut(e.Args, " ")
 	evt, ok := lookup(first)
 	if !ok {
 		evt, ok = byPosition(first)
 	}
 	if ok {
-		return target{evt.Info.Chat, evt.Info.Sender, evt.Info.ID, evt.Message}, strings.TrimSpace(rest), nil
+		return wa.Target{Chat: evt.Info.Chat, Sender: evt.Info.Sender, ID: evt.Info.ID, Message: evt.Message}, strings.TrimSpace(rest), nil
 	}
 	if ci := e.Msg.Message.GetExtendedTextMessage().GetContextInfo(); ci.GetStanzaID() != "" {
 		sender, err := types.ParseJID(ci.GetParticipant())
 		if err != nil || sender.IsEmpty() {
 			sender = e.Chat() // private chat: the other person
 		}
-		return target{e.Chat(), sender, ci.GetStanzaID(), ci.GetQuotedMessage()}, e.Args, nil
+		return wa.Target{Chat: e.Chat(), Sender: sender, ID: ci.GetStanzaID(), Message: ci.GetQuotedMessage()}, e.Args, nil
 	}
 	if e.Terminal {
-		return target{}, "", errors.New("say which message: react <id|last|#n> <emoji> (see: recent)")
+		return wa.Target{}, "", errors.New("say which message: react <id|last|#n> <emoji> (see: recent)")
 	}
-	return target{e.Chat(), e.Msg.Info.Sender, e.Msg.Info.ID, e.Msg.Message}, e.Args, nil
+	return wa.Target{Chat: e.Chat(), Sender: e.Msg.Info.Sender, ID: e.Msg.Info.ID, Message: e.Msg.Message}, e.Args, nil
 }
 
 func cmdRecent(e Env) error {
@@ -459,8 +402,6 @@ func byPosition(s string) (*events.Message, bool) {
 
 // Reaction emojis are data sent to WhatsApp, written as escapes to keep the
 // source free of literal emoji: thumbs up, heart, fire, joy, wow, sad, pray, party.
-const defaultReaction = "\U0001F44D"
-
 var randomEmojis = []string{
 	"\U0001F44D", "\u2764\uFE0F", "\U0001F525", "\U0001F602",
 	"\U0001F62E", "\U0001F622", "\U0001F64F", "\U0001F389",
@@ -470,7 +411,7 @@ var randomEmojis = []string{
 func resolveEmoji(s string) string {
 	switch s {
 	case "":
-		return defaultReaction
+		return wa.DefaultReaction
 	case "random":
 		return randomEmojis[rand.IntN(len(randomEmojis))]
 	}
@@ -478,13 +419,13 @@ func resolveEmoji(s string) string {
 }
 
 // sendReaction is the one place that actually sends a reaction ("" removes it).
-func sendReaction(ctx context.Context, client *whatsmeow.Client, t target, emoji string) error {
+func sendReaction(ctx context.Context, client *whatsmeow.Client, t wa.Target, emoji string) error {
 	_, err := sendMessage(ctx, client, t.Chat, client.BuildReaction(t.Chat, t.Sender, t.ID, emoji))
 	return err
 }
 
-func targetOf(evt *events.Message) target {
-	return target{evt.Info.Chat, evt.Info.Sender, evt.Info.ID, evt.Message}
+func targetOf(evt *events.Message) wa.Target {
+	return wa.Target{Chat: evt.Info.Chat, Sender: evt.Info.Sender, ID: evt.Info.ID, Message: evt.Message}
 }
 
 func cmdUnreact(e Env) error {
@@ -511,7 +452,7 @@ func cmdReactAll(e Env) error {
 		}
 	}
 	recentMu.Lock()
-	var picks []target
+	var picks []wa.Target
 	for i := len(recentIDs) - 1; i >= 0 && len(picks) < n; i-- {
 		m := recentMap[recentIDs[i]]
 		if e.Terminal || m.Info.Chat == e.Chat() {
@@ -582,7 +523,7 @@ func autoReact(ctx context.Context, client *whatsmeow.Client, evt *events.Messag
 }
 
 // describeTarget shows the 4 BuildReaction inputs and the key WhatsApp will receive.
-func describeTarget(e Env, t target, emoji string) string {
+func describeTarget(e Env, t wa.Target, emoji string) string {
 	key := e.Client.BuildMessageKey(t.Chat, t.Sender, t.ID)
 	participant := key.GetParticipant()
 	if participant == "" {
@@ -596,14 +537,6 @@ func describeTarget(e Env, t target, emoji string) string {
 		key.GetRemoteJID(), key.GetID(), key.GetFromMe(), participant)
 }
 
-// toJID accepts a full JID (…@lid, …@g.us, …@s.whatsapp.net) or a plain phone number.
-func toJID(s string) (types.JID, error) {
-	if strings.Contains(s, "@") {
-		return types.ParseJID(s)
-	}
-	return phoneToJID(s), nil
-}
-
 // cmdReactTo reacts using all 4 inputs typed by hand — no remembered message needed.
 //
 //	reactto 278833789944039@lid 3EB0AC684A7EE08CD8C216 <emoji>               (my own message)
@@ -613,17 +546,17 @@ func cmdReactTo(e Env) error {
 	if len(f) < 2 {
 		return errors.New("usage: reactto <chat> <id> [emoji] [sender|me]")
 	}
-	chat, err := toJID(f[0])
+	chat, err := wa.ToJID(f[0])
 	if err != nil {
 		return fmt.Errorf("bad chat: %w", err)
 	}
-	t := target{Chat: chat, ID: strings.ToUpper(f[1]), Sender: *e.Client.Store.ID} // default: my message
-	emoji := defaultReaction
+	t := wa.Target{Chat: chat, ID: strings.ToUpper(f[1]), Sender: *e.Client.Store.ID} // default: my message
+	emoji := wa.DefaultReaction
 	if len(f) >= 3 {
 		emoji = resolveEmoji(f[2])
 	}
 	if len(f) >= 4 && f[3] != "me" {
-		if t.Sender, err = toJID(f[3]); err != nil {
+		if t.Sender, err = wa.ToJID(f[3]); err != nil {
 			return fmt.Errorf("bad sender: %w", err)
 		}
 	}
@@ -751,7 +684,7 @@ func cmdCheck(e Env) error {
 	if e.Args == "" {
 		return errors.New("usage: !check <phone with country code>")
 	}
-	res, err := e.Client.IsOnWhatsApp(e.Ctx, []string{"+" + phoneToJID(e.Args).User})
+	res, err := e.Client.IsOnWhatsApp(e.Ctx, []string{"+" + wa.PhoneToJID(e.Args).User})
 	if err != nil {
 		return err
 	}
@@ -762,40 +695,16 @@ func cmdCheck(e Env) error {
 	return e.Say("%s", b.String())
 }
 
-// profile is what WhatsApp tells us about a user.
-type profile struct {
-	JID        types.JID
-	About      string
-	Devices    int
-	PictureURL string // empty when the picture is hidden or not set
-}
-
 // whoisTarget picks whose profile to show: the argument if given, else the sender.
 func whoisTarget(e Env) (types.JID, error) {
 	if e.Args == "" {
 		return e.Msg.Info.Sender.ToNonAD(), nil
 	}
-	return toJID(e.Args)
-}
-
-// lookupProfile gathers About, devices and picture URL in one place so
-// commands never call the user APIs directly.
-func lookupProfile(ctx context.Context, client *whatsmeow.Client, who types.JID) (profile, error) {
-	infos, err := client.GetUserInfo(ctx, []types.JID{who})
-	if err != nil {
-		return profile{}, fmt.Errorf("user info %s: %w", who, err)
-	}
-	info := infos[who]
-	p := profile{JID: who, About: info.Status, Devices: len(info.Devices)}
-	// A missing picture is normal (privacy settings), so it is not an error.
-	if pic, err := client.GetProfilePictureInfo(ctx, who, &whatsmeow.GetProfilePictureParams{}); err == nil && pic != nil {
-		p.PictureURL = pic.URL
-	}
-	return p, nil
+	return wa.ToJID(e.Args)
 }
 
 // profileText renders a profile for chat or terminal.
-func profileText(p profile) string {
+func profileText(p wa.Profile) string {
 	pic := "hidden or none"
 	if p.PictureURL != "" {
 		pic = "available"
@@ -856,7 +765,7 @@ func deliverImage(e Env, data []byte, mimetype, name, caption string) error {
 }
 
 // sendProfilePic downloads a profile picture and delivers it.
-func sendProfilePic(e Env, p profile) error {
+func sendProfilePic(e Env, p wa.Profile) error {
 	if p.PictureURL == "" {
 		return errors.New("profile picture is hidden or not set")
 	}
@@ -872,7 +781,7 @@ func cmdWhois(e Env) error {
 	if err != nil {
 		return err
 	}
-	p, err := lookupProfile(e.Ctx, e.Client, who)
+	p, err := wa.LookupProfile(e.Ctx, e.Client, who)
 	if err != nil {
 		return err
 	}
@@ -890,99 +799,11 @@ func cmdPic(e Env) error {
 	if err != nil {
 		return err
 	}
-	p, err := lookupProfile(e.Ctx, e.Client, who)
+	p, err := wa.LookupProfile(e.Ctx, e.Client, who)
 	if err != nil {
 		return err
 	}
 	return sendProfilePic(e, p)
-}
-
-// =====================================================================
-// Contact flow: check registration -> whois -> react, one step at a time
-// =====================================================================
-
-// flowState is passed from step to step; each step returns a new copy.
-type flowState struct {
-	Who       types.JID // filled by checkRegistered
-	Profile   profile   // filled by fetchProfile
-	Emoji     string    // reaction to put on the message
-	MessageID types.MessageID
-}
-
-// flowStep is one stage of the flow. Steps are plain functions so the
-// order is just a list and new stages can be added without new branching.
-type flowStep struct {
-	Name string
-	Run  func(context.Context, *whatsmeow.Client, flowState) (flowState, error)
-}
-
-// contactFlowSteps is the order the flow runs in.
-var contactFlowSteps = []flowStep{
-	{"check registered", checkRegistered},
-	{"whois", fetchProfile},
-	{"react", reactToMessage},
-}
-
-// runSteps runs steps in order and stops at the first failure, naming the
-// step so the caller knows how far it got.
-func runSteps(ctx context.Context, client *whatsmeow.Client, st flowState, steps []flowStep) (flowState, error) {
-	for i, step := range steps {
-		start := time.Now()
-		next, err := step.Run(ctx, client, st)
-		if err != nil {
-			return st, fmt.Errorf("step %d/%d %q: %w", i+1, len(steps), step.Name, err)
-		}
-		slog.Info("flow step done", "step", step.Name, "took", time.Since(start))
-		st = next
-	}
-	return st, nil
-}
-
-// errNotOnWhatsApp lets callers such as the HTTP API tell a bad number
-// apart from a network failure.
-var errNotOnWhatsApp = errors.New("not on WhatsApp")
-
-// checkRegistered turns the typed number into the JID WhatsApp knows, and
-// fails early for numbers that are not on WhatsApp.
-func checkRegistered(ctx context.Context, client *whatsmeow.Client, st flowState) (flowState, error) {
-	res, err := client.IsOnWhatsApp(ctx, []string{"+" + st.Who.User})
-	if err != nil {
-		return st, err
-	}
-	if len(res) == 0 || !res[0].IsIn {
-		return st, fmt.Errorf("%s: %w", st.Who.User, errNotOnWhatsApp)
-	}
-	st.Who = res[0].JID
-	return st, nil
-}
-
-func fetchProfile(ctx context.Context, client *whatsmeow.Client, st flowState) (flowState, error) {
-	p, err := lookupProfile(ctx, client, st.Who)
-	if err != nil {
-		return st, err
-	}
-	st.Profile = p
-	return st, nil
-}
-
-// Replace this placeholder with the ID of an existing message to react to.
-const reactionMessageID types.MessageID = "3EB0TEST"
-
-// reactToMessage reacts to the configured existing message. The sender in the
-// key is our own JID, so the target message must have been sent by this account.
-func reactToMessage(ctx context.Context, client *whatsmeow.Client, st flowState) (flowState, error) {
-	t := target{Chat: st.Who, Sender: client.Store.ID.ToNonAD(), ID: st.MessageID}
-	return st, sendReaction(ctx, client, t, st.Emoji)
-}
-
-// contactFlow is the function to call from code: phone in, finished state out.
-func contactFlow(ctx context.Context, client *whatsmeow.Client, phone, _ string) (flowState, error) {
-	start := flowState{
-		Who:       phoneToJID(phone),
-		Emoji:     defaultReaction,
-		MessageID: reactionMessageID,
-	}
-	return runSteps(ctx, client, start, contactFlowSteps)
 }
 
 func cmdFlow(e Env) error {
@@ -990,7 +811,7 @@ func cmdFlow(e Env) error {
 	if phone == "" || strings.TrimSpace(extra) != "" {
 		return errors.New("usage: flow <phone>")
 	}
-	st, err := contactFlow(e.Ctx, e.Client, phone, "")
+	st, err := wa.ContactFlow(e.Ctx, e.Client, phone)
 	if err != nil {
 		return err
 	}
@@ -1379,22 +1200,16 @@ func readTerminal(ctx context.Context, client *whatsmeow.Client) {
 }
 
 func run(ctx context.Context) error {
-	client, err := newClient(ctx)
+	client, err := wa.NewClient(ctx, dbPath)
 	if err != nil {
 		return err
 	}
 	go writeChatLog()
 	client.AddEventHandler(eventHandler(ctx, client))
-	if err := connect(ctx, client); err != nil {
+	if err := wa.Connect(ctx, client); err != nil {
 		return err
 	}
 	defer client.Disconnect()
-
-	stopAPI, err := startAPI(client)
-	if err != nil {
-		return err
-	}
-	defer stopAPI()
 
 	fmt.Println("Bot running. Type a command here (try: help), or send !help on WhatsApp. Ctrl+C to stop.")
 	fmt.Print("> ")

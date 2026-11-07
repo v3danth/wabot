@@ -1,15 +1,13 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"wabot/wa"
 
-	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -60,19 +58,6 @@ func TestSplitArgs(t *testing.T) {
 	}
 }
 
-func TestPhoneToJID(t *testing.T) {
-	if got := phoneToJID("+91 98864-73508"); got != me {
-		t.Errorf("phoneToJID = %s, want %s", got, me)
-	}
-}
-
-func TestToJID(t *testing.T) {
-	got, err := toJID("278833789944039@lid")
-	if err != nil || got.Server != types.HiddenUserServer || got.User != "278833789944039" {
-		t.Errorf("toJID(lid) = %v, %v", got, err)
-	}
-}
-
 func TestTextOf(t *testing.T) {
 	img := &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Caption: proto.String("cap")}}
 	if got := textOf(img); got != "cap" {
@@ -90,7 +75,7 @@ func TestExtFor(t *testing.T) {
 }
 
 func TestResolveEmoji(t *testing.T) {
-	if got := resolveEmoji(""); got != defaultReaction {
+	if got := resolveEmoji(""); got != wa.DefaultReaction {
 		t.Errorf("resolveEmoji(\"\") = %q", got)
 	}
 	if got := resolveEmoji("random"); !slices.Contains(randomEmojis, got) {
@@ -150,7 +135,7 @@ func TestPickTarget(t *testing.T) {
 }
 
 func TestProfileText(t *testing.T) {
-	got := profileText(profile{JID: friend, About: "busy", Devices: 2})
+	got := profileText(wa.Profile{JID: friend, About: "busy", Devices: 2})
 	want := "*911111111111@s.whatsapp.net*\nAbout: busy\nDevices: 2\nProfile pic: hidden or none"
 	if got != want {
 		t.Errorf("profileText =\n%s\nwant\n%s", got, want)
@@ -189,30 +174,5 @@ func TestEntryText(t *testing.T) {
 	react.ReactionMessage.Text = proto.String("")
 	if got := entryText(react); got != "removed reaction from 3AABC" {
 		t.Errorf("entryText(unreact) = %q", got)
-	}
-}
-
-func TestRunStepsStopsAtFirstFailure(t *testing.T) {
-	var ran []string
-	step := func(name string, fail bool) flowStep {
-		return flowStep{name, func(_ context.Context, _ *whatsmeow.Client, st flowState) (flowState, error) {
-			ran = append(ran, name)
-			if fail {
-				return st, errors.New("boom")
-			}
-			st.Emoji += name
-			return st, nil
-		}}
-	}
-	st, err := runSteps(context.Background(), nil, flowState{},
-		[]flowStep{step("a", false), step("b", true), step("c", false)})
-	if err == nil || !strings.Contains(err.Error(), `step 2/3 "b"`) {
-		t.Errorf("err = %v, want failure naming step 2/3 b", err)
-	}
-	if !slices.Equal(ran, []string{"a", "b"}) {
-		t.Errorf("ran %v, want [a b]", ran)
-	}
-	if st.Emoji != "a" {
-		t.Errorf("state = %q, want result of last good step", st.Emoji)
 	}
 }
