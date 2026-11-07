@@ -107,3 +107,25 @@ func TestPresenceOf(t *testing.T) {
 		t.Errorf("unavailable = %+v, want offline with last seen", got)
 	}
 }
+
+func TestPresenceTrackerKeepsLatest(t *testing.T) {
+	tr := &presenceTracker{last: map[types.JID]Presence{}, changed: make(chan struct{})}
+	lid := types.NewJID("278833789944039", types.HiddenUserServer)
+	_, ok, changed := tr.lookup([]types.JID{lid})
+	if ok {
+		t.Fatal("empty tracker reported a presence")
+	}
+	tr.handle(&events.Presence{From: lid})
+	select {
+	case <-changed:
+	default:
+		t.Fatal("waiter not woken by update")
+	}
+	if p, ok, _ := tr.lookup([]types.JID{lid}); !ok || p.Status != PresenceOnline {
+		t.Errorf("after update = %+v, %v; want online", p, ok)
+	}
+	tr.handle(&events.Connected{})
+	if _, ok, _ := tr.lookup([]types.JID{lid}); ok {
+		t.Error("reconnect did not clear cached presence")
+	}
+}
