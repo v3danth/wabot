@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -186,5 +189,30 @@ func TestEntryText(t *testing.T) {
 	react.ReactionMessage.Text = proto.String("")
 	if got := entryText(react); got != "removed reaction from 3AABC" {
 		t.Errorf("entryText(unreact) = %q", got)
+	}
+}
+
+func TestRunStepsStopsAtFirstFailure(t *testing.T) {
+	var ran []string
+	step := func(name string, fail bool) flowStep {
+		return flowStep{name, func(_ context.Context, _ *whatsmeow.Client, st flowState) (flowState, error) {
+			ran = append(ran, name)
+			if fail {
+				return st, errors.New("boom")
+			}
+			st.Text += name
+			return st, nil
+		}}
+	}
+	st, err := runSteps(context.Background(), nil, flowState{},
+		[]flowStep{step("a", false), step("b", true), step("c", false)})
+	if err == nil || !strings.Contains(err.Error(), `step 2/3 "b"`) {
+		t.Errorf("err = %v, want failure naming step 2/3 b", err)
+	}
+	if !slices.Equal(ran, []string{"a", "b"}) {
+		t.Errorf("ran %v, want [a b]", ran)
+	}
+	if st.Text != "a" {
+		t.Errorf("state = %q, want result of last good step", st.Text)
 	}
 }
