@@ -32,4 +32,4 @@ require (
 	rsc.io/qr v0.2.0 // indirect
 )
 
-replace go.mau.fi/whatsmeow => /Users/vedanths/Projects/whatsmeow
+replace go.mau.fi/whatsmeow => ../whatsmeow
