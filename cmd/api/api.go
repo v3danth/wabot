@@ -30,12 +30,30 @@ type flowRequest struct {
 
 // flowResponse is what POST /flow returns on success.
 type flowResponse struct {
-	JID        string `json:"jid"`
-	About      string `json:"about"`
-	Devices    int    `json:"devices"`
-	PictureURL string `json:"picture_url,omitempty"`
-	MessageID  string `json:"message_id"`
-	Reaction   string `json:"reaction"`
+	JID        string       `json:"jid"`
+	Name       string       `json:"name"`
+	NameSource string       `json:"name_source,omitempty"`
+	About      string       `json:"about"`
+	Devices    int          `json:"devices"`
+	PictureURL string       `json:"picture_url,omitempty"`
+	MessageID  string       `json:"message_id"`
+	Reaction   reactionInfo `json:"reaction"`
+	Timings    []stepMillis `json:"timings"`
+	TotalMS    int64        `json:"total_ms"`
+}
+
+// reactionInfo says whether WhatsApp accepted the reaction. Sent is true only
+// after the server ack; it cannot tell whether message_id really exists.
+type reactionInfo struct {
+	Emoji      string `json:"emoji"`
+	Sent       bool   `json:"sent"`
+	ID         string `json:"id,omitempty"`
+	ServerTime string `json:"server_time,omitempty"`
+}
+
+type stepMillis struct {
+	Step string `json:"step"`
+	MS   int64  `json:"ms"`
 }
 
 // flowFunc is what the handler runs per request; it is a value so the
@@ -136,13 +154,27 @@ func normalizePhone(s string) (string, error) {
 }
 
 func flowResponseOf(st wa.FlowState) flowResponse {
+	timings := make([]stepMillis, 0, len(st.Timings))
+	var total time.Duration
+	for _, t := range st.Timings {
+		timings = append(timings, stepMillis{t.Step, t.Took.Milliseconds()})
+		total += t.Took
+	}
+	reaction := reactionInfo{Emoji: st.Emoji, Sent: st.Reaction.ID != "", ID: st.Reaction.ID}
+	if !st.Reaction.ServerTime.IsZero() {
+		reaction.ServerTime = st.Reaction.ServerTime.UTC().Format(time.RFC3339)
+	}
 	return flowResponse{
 		JID:        st.Who.String(),
+		Name:       st.Profile.Name,
+		NameSource: st.Profile.NameSource,
 		About:      st.Profile.About,
 		Devices:    st.Profile.Devices,
 		PictureURL: st.Profile.PictureURL,
 		MessageID:  st.MessageID,
-		Reaction:   st.Emoji,
+		Reaction:   reaction,
+		Timings:    timings,
+		TotalMS:    total.Milliseconds(),
 	}
 }
 

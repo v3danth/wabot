@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"wabot/wa"
 
 	"go.mau.fi/whatsmeow/types"
@@ -23,9 +24,11 @@ func fakeFlow(err error, gotPhone *string) flowFunc {
 		}
 		return wa.FlowState{
 			Who:       types.NewJID(phone, types.DefaultUserServer),
-			Profile:   wa.Profile{About: "busy", Devices: 2},
+			Profile:   wa.Profile{Name: "Asha", NameSource: "push name", About: "busy", Devices: 2},
 			Emoji:     wa.DefaultReaction,
 			MessageID: "3EB0TEST",
+			Reaction:  wa.Sent{ID: "3EB0ACK"},
+			Timings:   []wa.StepTiming{{Step: "whois", Took: 300 * time.Millisecond}, {Step: "react", Took: 900 * time.Millisecond}},
 		}, nil
 	}
 }
@@ -49,8 +52,14 @@ func TestFlowSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.MessageID != "3EB0TEST" || resp.About != "busy" || resp.JID != "919886473508@s.whatsapp.net" {
+	if resp.MessageID != "3EB0TEST" || resp.About != "busy" || resp.JID != "919886473508@s.whatsapp.net" || resp.Name != "Asha" {
 		t.Errorf("response = %+v", resp)
+	}
+	if !resp.Reaction.Sent || resp.Reaction.ID != "3EB0ACK" {
+		t.Errorf("reaction = %+v, want sent with ack ID", resp.Reaction)
+	}
+	if len(resp.Timings) != 2 || resp.Timings[1].Step != "react" || resp.Timings[1].MS != 900 || resp.TotalMS != 1200 {
+		t.Errorf("timings = %+v total %d", resp.Timings, resp.TotalMS)
 	}
 }
 

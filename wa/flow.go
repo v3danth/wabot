@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -25,6 +26,15 @@ type FlowState struct {
 	Profile   Profile   // filled by fetchProfile
 	Emoji     string    // reaction to put on the message
 	MessageID types.MessageID
+	Reaction  Sent         // filled by reactToMessage once WhatsApp acks it
+	Timings   []StepTiming // one entry per finished step, filled by RunSteps
+}
+
+// StepTiming records how long one step took, so callers can see where the
+// time of a request went.
+type StepTiming struct {
+	Step string
+	Took time.Duration
 }
 
 // FlowStep is one stage of the flow. Steps are plain functions so the
@@ -60,7 +70,10 @@ func RunSteps(ctx context.Context, client *whatsmeow.Client, st FlowState, steps
 		if err != nil {
 			return st, fmt.Errorf("step %d/%d %q: %w", i+1, len(steps), step.Name, err)
 		}
-		slog.Info("flow step done", "step", step.Name, "took", time.Since(start))
+		took := time.Since(start)
+		slog.Info("flow step done", "step", step.Name, "took", took)
+		// Copy before appending so the caller's slice is never shared.
+		next.Timings = append(slices.Clone(st.Timings), StepTiming{step.Name, took})
 		st = next
 	}
 	return st, nil
@@ -93,5 +106,10 @@ func fetchProfile(ctx context.Context, client *whatsmeow.Client, st FlowState) (
 // key is our own JID, so the target message must have been sent by this account.
 func reactToMessage(ctx context.Context, client *whatsmeow.Client, st FlowState) (FlowState, error) {
 	t := Target{Chat: st.Who, Sender: client.Store.ID.ToNonAD(), ID: st.MessageID}
-	return st, SendReaction(ctx, client, t, st.Emoji)
+	sent, err := SendReaction(ctx, client, t, st.Emoji)
+	if err != nil {
+		return st, err
+	}
+	st.Reaction = sent
+	return st, nil
 }

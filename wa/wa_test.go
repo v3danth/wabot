@@ -49,3 +49,20 @@ func TestRunStepsStopsAtFirstFailure(t *testing.T) {
 		t.Errorf("state = %q, want result of last good step", st.Emoji)
 	}
 }
+
+func TestContactName(t *testing.T) {
+	tests := []struct {
+		c          types.ContactInfo
+		name, from string
+	}{
+		{types.ContactInfo{FullName: "Asha K", PushName: "asha"}, "Asha K", "contact"},
+		{types.ContactInfo{PushName: "asha", BusinessName: "Shop"}, "asha", "push name"},
+		{types.ContactInfo{BusinessName: "Shop"}, "Shop", "business"},
+		{types.ContactInfo{}, "", ""},
+	}
+	for _, tc := range tests {
+		if name, from := contactName(tc.c); name != tc.name || from != tc.from {
+			t.Errorf("contactName(%+v) = %q, %q; want %q, %q", tc.c, name, from, tc.name, tc.from)
+		}
+	}
+}

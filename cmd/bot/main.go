@@ -709,7 +709,15 @@ func profileText(p wa.Profile) string {
 	if p.PictureURL != "" {
 		pic = "available"
 	}
-	return fmt.Sprintf("*%s*\nAbout: %s\nDevices: %d\nProfile pic: %s", p.JID, p.About, p.Devices, pic)
+	name := "unknown"
+	if p.Name != "" {
+		name = p.Name + " (" + p.NameSource + ")"
+	}
+	about := p.About
+	if about == "" {
+		about = "hidden or empty"
+	}
+	return fmt.Sprintf("*%s*\nName: %s\nAbout: %s\nDevices: %d\nProfile pic: %s", p.JID, name, about, p.Devices, pic)
 }
 
 // httpClient has a timeout so a stalled CDN download cannot hang a command.
@@ -815,7 +823,12 @@ func cmdFlow(e Env) error {
 	if err != nil {
 		return err
 	}
-	return e.Say("%s\n\nReacted %s to message %s.", profileText(st.Profile), st.Emoji, st.MessageID)
+	var steps strings.Builder
+	for _, t := range st.Timings {
+		fmt.Fprintf(&steps, "\n- %s: %d ms", t.Step, t.Took.Milliseconds())
+	}
+	return e.Say("%s\n\nReacted %s to message %s (ack %s).\nTimings:%s",
+		profileText(st.Profile), st.Emoji, st.MessageID, st.Reaction.ID, steps.String())
 }
 
 func cmdStatus(e Env) error {

@@ -2,6 +2,7 @@ package wa
 
 import (
 	"context"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -20,8 +21,18 @@ type Target struct {
 	Message      *waE2E.Message // the original, needed only for quoting
 }
 
+// Sent is the server's acknowledgement of a message. An ack means WhatsApp
+// accepted it; it does not prove the target message of a reaction exists.
+type Sent struct {
+	ID         types.MessageID
+	ServerTime time.Time
+}
+
 // SendReaction reacts to the target; an empty emoji removes the reaction.
-func SendReaction(ctx context.Context, client *whatsmeow.Client, t Target, emoji string) error {
-	_, err := client.SendMessage(ctx, t.Chat, client.BuildReaction(t.Chat, t.Sender, t.ID, emoji))
-	return err
+func SendReaction(ctx context.Context, client *whatsmeow.Client, t Target, emoji string) (Sent, error) {
+	resp, err := client.SendMessage(ctx, t.Chat, client.BuildReaction(t.Chat, t.Sender, t.ID, emoji))
+	if err != nil {
+		return Sent{}, err
+	}
+	return Sent{ID: resp.ID, ServerTime: resp.Timestamp}, nil
 }

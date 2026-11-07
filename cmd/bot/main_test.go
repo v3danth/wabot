@@ -135,8 +135,8 @@ func TestPickTarget(t *testing.T) {
 }
 
 func TestProfileText(t *testing.T) {
-	got := profileText(wa.Profile{JID: friend, About: "busy", Devices: 2})
-	want := "*911111111111@s.whatsapp.net*\nAbout: busy\nDevices: 2\nProfile pic: hidden or none"
+	got := profileText(wa.Profile{JID: friend, Name: "Asha", NameSource: "push name", About: "busy", Devices: 2})
+	want := "*911111111111@s.whatsapp.net*\nName: Asha (push name)\nAbout: busy\nDevices: 2\nProfile pic: hidden or none"
 	if got != want {
 		t.Errorf("profileText =\n%s\nwant\n%s", got, want)
 	}
