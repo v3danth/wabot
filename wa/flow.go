@@ -25,6 +25,7 @@ type FlowState struct {
 	Phone     string    // digits as typed; names the saved photo
 	Who       types.JID // filled by checkRegistered
 	Profile   Profile   // filled by fetchProfile
+	Presence  Presence  // filled by fetchPresence
 	PhotoDir  string    // where savePhoto writes
 	PhotoPath string    // filled by savePhoto; empty when there is no picture
 	Emoji     string    // reaction to put on the message
@@ -51,6 +52,7 @@ type FlowStep struct {
 var ContactFlowSteps = []FlowStep{
 	{"check registered", checkRegistered},
 	{"whois", fetchProfile},
+	{"presence", fetchPresence},
 	{"save photo", savePhoto},
 	{"react", reactToMessage},
 }
@@ -106,6 +108,15 @@ func fetchProfile(ctx context.Context, client *whatsmeow.Client, st FlowState) (
 		return st, err
 	}
 	st.Profile = p
+	return st, nil
+}
+
+func fetchPresence(ctx context.Context, client *whatsmeow.Client, st FlowState) (FlowState, error) {
+	p, err := FetchPresence(ctx, client, st.Who, PresenceWait)
+	if err != nil {
+		return st, err
+	}
+	st.Presence = p
 	return st, nil
 }
 

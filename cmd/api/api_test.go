@@ -28,6 +28,7 @@ func fakeFlow(err error, gotPhone *string) flowFunc {
 			Emoji:     wa.DefaultReaction,
 			MessageID: "3EB0TEST",
 			Reaction:  wa.Sent{ID: "3EB0ACK"},
+			Presence:  wa.Presence{Status: wa.PresenceOffline, LastSeen: time.Date(2026, 11, 7, 14, 0, 0, 0, time.UTC)},
 			Timings:   []wa.StepTiming{{Step: "whois", Took: 300 * time.Millisecond}, {Step: "react", Took: 900 * time.Millisecond}},
 		}, nil
 	}
@@ -54,6 +55,9 @@ func TestFlowSuccess(t *testing.T) {
 	}
 	if resp.MessageID != "3EB0TEST" || resp.About != "busy" || resp.JID != "919886473508@s.whatsapp.net" || resp.Name != "Asha" {
 		t.Errorf("response = %+v", resp)
+	}
+	if resp.Status != "offline" || resp.LastSeen != "2026-11-07T14:00:00Z" {
+		t.Errorf("presence = %q last seen %q", resp.Status, resp.LastSeen)
 	}
 	if !resp.Reaction.Sent || resp.Reaction.ID != "3EB0ACK" {
 		t.Errorf("reaction = %+v, want sent with ack ID", resp.Reaction)

@@ -10,9 +10,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 func TestPhoneToJID(t *testing.T) {
@@ -93,5 +95,15 @@ func TestSavePhotoSkipsHiddenPicture(t *testing.T) {
 	st, err := savePhoto(context.Background(), nil, FlowState{Phone: "91", PhotoDir: t.TempDir()})
 	if err != nil || st.PhotoPath != "" {
 		t.Errorf("savePhoto with no picture = %q, %v; want no file, no error", st.PhotoPath, err)
+	}
+}
+
+func TestPresenceOf(t *testing.T) {
+	seen := time.Date(2026, 11, 7, 14, 0, 0, 0, time.UTC)
+	if got := presenceOf(&events.Presence{}); got.Status != PresenceOnline {
+		t.Errorf("available = %+v, want online", got)
+	}
+	if got := presenceOf(&events.Presence{Unavailable: true, LastSeen: seen}); got.Status != PresenceOffline || !got.LastSeen.Equal(seen) {
+		t.Errorf("unavailable = %+v, want offline with last seen", got)
 	}
 }

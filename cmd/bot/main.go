@@ -808,8 +808,12 @@ func cmdFlow(e Env) error {
 	if photo == "" {
 		photo = "none (hidden or not set)"
 	}
-	return e.Say("%s\nPhoto saved: %s\n\nReacted %s to message %s (ack %s).\nTimings:%s",
-		profileText(st.Profile), photo, st.Emoji, st.MessageID, st.Reaction.ID, steps.String())
+	status := st.Presence.Status
+	if !st.Presence.LastSeen.IsZero() {
+		status += ", last seen " + st.Presence.LastSeen.Local().Format("2 Jan 15:04")
+	}
+	return e.Say("%s\nStatus: %s\nPhoto saved: %s\n\nReacted %s to message %s (ack %s).\nTimings:%s",
+		profileText(st.Profile), status, photo, st.Emoji, st.MessageID, st.Reaction.ID, steps.String())
 }
 
 func cmdStatus(e Env) error {

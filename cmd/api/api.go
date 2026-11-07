@@ -35,6 +35,8 @@ type flowResponse struct {
 	NameSource string       `json:"name_source,omitempty"`
 	About      string       `json:"about"`
 	Devices    int          `json:"devices"`
+	Status     string       `json:"status"`
+	LastSeen   string       `json:"last_seen,omitempty"`
 	PictureURL string       `json:"picture_url,omitempty"`
 	PhotoPath  string       `json:"photo_path,omitempty"`
 	MessageID  string       `json:"message_id"`
@@ -165,12 +167,18 @@ func flowResponseOf(st wa.FlowState) flowResponse {
 	if !st.Reaction.ServerTime.IsZero() {
 		reaction.ServerTime = st.Reaction.ServerTime.UTC().Format(time.RFC3339)
 	}
+	var lastSeen string
+	if !st.Presence.LastSeen.IsZero() {
+		lastSeen = st.Presence.LastSeen.UTC().Format(time.RFC3339)
+	}
 	return flowResponse{
 		JID:        st.Who.String(),
 		Name:       st.Profile.Name,
 		NameSource: st.Profile.NameSource,
 		About:      st.Profile.About,
 		Devices:    st.Profile.Devices,
+		Status:     st.Presence.Status,
+		LastSeen:   lastSeen,
 		PictureURL: st.Profile.PictureURL,
 		PhotoPath:  st.PhotoPath,
 		MessageID:  st.MessageID,
