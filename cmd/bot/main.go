@@ -21,11 +21,9 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"io"
 	"log/slog"
 	"math/rand/v2"
 	"mime"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -720,27 +718,6 @@ func profileText(p wa.Profile) string {
 	return fmt.Sprintf("*%s*\nName: %s\nAbout: %s\nDevices: %d\nProfile pic: %s", p.JID, name, about, p.Devices, pic)
 }
 
-// httpClient has a timeout so a stalled CDN download cannot hang a command.
-var httpClient = &http.Client{Timeout: 30 * time.Second}
-
-// fetch downloads a URL into memory.
-func fetch(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	// Close errors after a full read carry no useful information.
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
-}
-
 // saveFile writes into the download folder and returns the absolute path,
 // so the printed path works from any directory.
 func saveFile(name string, data []byte) (string, error) {
@@ -777,7 +754,7 @@ func sendProfilePic(e Env, p wa.Profile) error {
 	if p.PictureURL == "" {
 		return errors.New("profile picture is hidden or not set")
 	}
-	data, err := fetch(e.Ctx, p.PictureURL)
+	data, err := wa.Fetch(e.Ctx, p.PictureURL)
 	if err != nil {
 		return fmt.Errorf("download profile pic: %w", err)
 	}
@@ -827,8 +804,12 @@ func cmdFlow(e Env) error {
 	for _, t := range st.Timings {
 		fmt.Fprintf(&steps, "\n- %s: %d ms", t.Step, t.Took.Milliseconds())
 	}
-	return e.Say("%s\n\nReacted %s to message %s (ack %s).\nTimings:%s",
-		profileText(st.Profile), st.Emoji, st.MessageID, st.Reaction.ID, steps.String())
+	photo := st.PhotoPath
+	if photo == "" {
+		photo = "none (hidden or not set)"
+	}
+	return e.Say("%s\nPhoto saved: %s\n\nReacted %s to message %s (ack %s).\nTimings:%s",
+		profileText(st.Profile), photo, st.Emoji, st.MessageID, st.Reaction.ID, steps.String())
 }
 
 func cmdStatus(e Env) error {

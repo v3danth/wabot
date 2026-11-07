@@ -3,6 +3,10 @@ package wa
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -64,5 +68,30 @@ func TestContactName(t *testing.T) {
 		if name, from := contactName(tc.c); name != tc.name || from != tc.from {
 			t.Errorf("contactName(%+v) = %q, %q; want %q, %q", tc.c, name, from, tc.name, tc.from)
 		}
+	}
+}
+
+func TestSaveProfilePhoto(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("jpeg bytes"))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	path, err := SaveProfilePhoto(context.Background(), srv.URL, dir, "918317402174")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "profile_918317402174.jpg"); path != want {
+		t.Errorf("path = %s, want %s", path, want)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "jpeg bytes" {
+		t.Errorf("file = %q", got)
+	}
+}
+
+func TestSavePhotoSkipsHiddenPicture(t *testing.T) {
+	st, err := savePhoto(context.Background(), nil, FlowState{Phone: "91", PhotoDir: t.TempDir()})
+	if err != nil || st.PhotoPath != "" {
+		t.Errorf("savePhoto with no picture = %q, %v; want no file, no error", st.PhotoPath, err)
 	}
 }

@@ -36,6 +36,7 @@ type flowResponse struct {
 	About      string       `json:"about"`
 	Devices    int          `json:"devices"`
 	PictureURL string       `json:"picture_url,omitempty"`
+	PhotoPath  string       `json:"photo_path,omitempty"`
 	MessageID  string       `json:"message_id"`
 	Reaction   reactionInfo `json:"reaction"`
 	Timings    []stepMillis `json:"timings"`
@@ -171,6 +172,7 @@ func flowResponseOf(st wa.FlowState) flowResponse {
 		About:      st.Profile.About,
 		Devices:    st.Profile.Devices,
 		PictureURL: st.Profile.PictureURL,
+		PhotoPath:  st.PhotoPath,
 		MessageID:  st.MessageID,
 		Reaction:   reaction,
 		Timings:    timings,

@@ -129,11 +129,13 @@ curl -X POST localhost:8080/flow -d '{"phone": "918250053558"}'
 
 ### 3.3 What happens
 
-The request runs three steps, in order, and stops at the first one that fails:
+The request runs four steps, in order, and stops at the first one that fails:
 
 1. **check registered**: is this number on WhatsApp?
-2. **whois**: fetch their About text, number of devices and profile picture.
-3. **react**: put a 👍 on the message set in `ReactionMessageID` (see 3.5).
+2. **whois**: fetch their name, About text, number of devices and profile picture link.
+3. **save photo**: download the profile picture to `profile_<phone>.jpg` in a temp
+   folder (skipped if the picture is hidden). The path is in `photo_path`.
+4. **react**: put a 👍 on the message set in `ReactionMessageID` (see 3.5).
 
 ### 3.4 The answer
 
@@ -145,10 +147,17 @@ Success (HTTP 200):
   "about": "Hey there! I am using WhatsApp.",
   "devices": 2,
   "picture_url": "https://pps.whatsapp.net/...",
+  "photo_path": "/var/folders/.../T/wabot-photos/profile_918250053558.jpg",
   "message_id": "3EB0AC684A7EE08CD8C216",
-  "reaction": "👍"
+  "reaction": {"emoji": "👍", "sent": true, "id": "3EB07C...", "server_time": "2026-11-07T14:16:31Z"},
+  "timings": [{"step": "check registered", "ms": 211}, {"step": "whois", "ms": 414},
+              {"step": "save photo", "ms": 150}, {"step": "react", "ms": 696}],
+  "total_ms": 1471
 }
 ```
+
+Open the photo with `open "<photo_path>"`. `name` and `about` are empty when
+WhatsApp doesn't share them (their privacy settings, or you've never chatted).
 
 Errors always look like `{"error": "..."}`, with one of these status codes:
 
@@ -231,6 +240,7 @@ Settings, passed in front of the command:
 | Setting | Example | Effect |
 |---|---|---|
 | `WABOT_API_ADDR` | `WABOT_API_ADDR=127.0.0.1:9000 make api` | Use another port |
+| `WABOT_PHOTO_DIR` | `WABOT_PHOTO_DIR=~/Pictures/wabot make api` | Save profile photos there instead of the temp folder |
 | `WABOT_LOG=debug` | `WABOT_LOG=debug make bot` | Bot also logs receipts, typing and presence |
 
 ---
@@ -242,9 +252,10 @@ wabot/
 ├── wa/              shared WhatsApp code, used by both programs
 │   ├── client.go      log in (QR code) and connect
 │   ├── jid.go         phone number -> WhatsApp ID
-│   ├── profile.go     whois: About, devices, picture
+│   ├── profile.go     whois: name, About, devices, picture
+│   ├── photo.go       download and save the profile picture
 │   ├── react.go       send a reaction
-│   └── flow.go        the API's steps: check -> whois -> react
+│   └── flow.go        the API's steps: check -> whois -> save photo -> react
 ├── cmd/api/         the API program
 │   ├── main.go        connect, start the server, wait for Ctrl+C
 │   └── api.go         the POST /flow handler

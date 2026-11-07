@@ -22,8 +22,11 @@ var ErrNotOnWhatsApp = errors.New("not on WhatsApp")
 
 // FlowState is passed from step to step; each step returns a new copy.
 type FlowState struct {
+	Phone     string    // digits as typed; names the saved photo
 	Who       types.JID // filled by checkRegistered
 	Profile   Profile   // filled by fetchProfile
+	PhotoDir  string    // where savePhoto writes
+	PhotoPath string    // filled by savePhoto; empty when there is no picture
 	Emoji     string    // reaction to put on the message
 	MessageID types.MessageID
 	Reaction  Sent         // filled by reactToMessage once WhatsApp acks it
@@ -48,13 +51,17 @@ type FlowStep struct {
 var ContactFlowSteps = []FlowStep{
 	{"check registered", checkRegistered},
 	{"whois", fetchProfile},
+	{"save photo", savePhoto},
 	{"react", reactToMessage},
 }
 
 // ContactFlow is the function to call from code: phone in, finished state out.
 func ContactFlow(ctx context.Context, client *whatsmeow.Client, phone string) (FlowState, error) {
+	jid := PhoneToJID(phone)
 	start := FlowState{
-		Who:       PhoneToJID(phone),
+		Phone:     jid.User,
+		Who:       jid,
+		PhotoDir:  PhotoDir(),
 		Emoji:     DefaultReaction,
 		MessageID: ReactionMessageID,
 	}
@@ -99,6 +106,20 @@ func fetchProfile(ctx context.Context, client *whatsmeow.Client, st FlowState) (
 		return st, err
 	}
 	st.Profile = p
+	return st, nil
+}
+
+// savePhoto stores the profile picture on disk. A hidden picture is normal,
+// so the step then does nothing instead of failing the flow.
+func savePhoto(ctx context.Context, _ *whatsmeow.Client, st FlowState) (FlowState, error) {
+	if st.Profile.PictureURL == "" {
+		return st, nil
+	}
+	path, err := SaveProfilePhoto(ctx, st.Profile.PictureURL, st.PhotoDir, st.Phone)
+	if err != nil {
+		return st, err
+	}
+	st.PhotoPath = path
 	return st, nil
 }
 
